@@ -61,8 +61,8 @@ func runExistingAppForm(f *cmdutil.Factory, msg *initMsg) (*configInitResult, er
 	// Load existing config for defaults
 	existing, _ := core.LoadMultiAppConfig()
 	var firstApp *core.AppConfig
-	if existing != nil && len(existing.Apps) > 0 {
-		firstApp = &existing.Apps[0]
+	if existing != nil {
+		firstApp = existing.CurrentAppConfig("")
 	}
 
 	var appID, appSecret, brand string
@@ -177,17 +177,26 @@ func runCreateAppFlow(ctx context.Context, f *cmdutil.Factory, brandOverride cor
 	// Step 2: Build and display verification URL + QR code
 	verificationURL := larkauth.BuildVerificationURL(authResp.VerificationUriComplete, build.Version)
 
-	// Show QR code in terminal
-	qr, qrErr := qrcode.New(verificationURL, qrcode.Medium)
-	if qrErr == nil {
-		fmt.Fprint(f.IOStreams.ErrOut, qr.ToSmallString(false))
+	// Branch on TTY: human-friendly copy in interactive terminals,
+	// preserve original copy for AI / non-interactive callers.
+	if f.IOStreams.IsTerminal {
+		fmt.Fprintf(f.IOStreams.ErrOut, "%s", msg.ScanQRCode)
+		qr, qrErr := qrcode.New(verificationURL, qrcode.Medium)
+		if qrErr == nil {
+			fmt.Fprint(f.IOStreams.ErrOut, qr.ToSmallString(false))
+		}
+		fmt.Fprintf(f.IOStreams.ErrOut, "%s", msg.ScanOrOpenLink)
+		fmt.Fprintf(f.IOStreams.ErrOut, "  %s\n\n", verificationURL)
+		fmt.Fprintf(f.IOStreams.ErrOut, "%s\n", msg.WaitingForScan)
+	} else {
+		qr, qrErr := qrcode.New(verificationURL, qrcode.Medium)
+		if qrErr == nil {
+			fmt.Fprint(f.IOStreams.ErrOut, qr.ToSmallString(false))
+		}
+		fmt.Fprintf(f.IOStreams.ErrOut, "%s", msg.OpenLinkNonTTY)
+		fmt.Fprintf(f.IOStreams.ErrOut, "  %s\n\n", verificationURL)
+		fmt.Fprintf(f.IOStreams.ErrOut, "%s\n", msg.WaitingForScanNonTTY)
 	}
-
-	fmt.Fprintf(f.IOStreams.ErrOut, "%s", msg.ScanOrOpenLink)
-	fmt.Fprintf(f.IOStreams.ErrOut, "  %s\n\n", verificationURL)
-
-	// Step 3: Poll for result
-	fmt.Fprintf(f.IOStreams.ErrOut, "%s\n", msg.WaitingForScan)
 	result, err := larkauth.PollAppRegistration(ctx, httpClient, core.BrandFeishu, authResp.DeviceCode, authResp.Interval, authResp.ExpiresIn, f.IOStreams.ErrOut)
 	if err != nil {
 		return nil, output.ErrAuth("%v", err)

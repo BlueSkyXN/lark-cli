@@ -30,18 +30,6 @@ func newExecuteFactory(t *testing.T) (*cmdutil.Factory, *bytes.Buffer, *httpmock
 	return factory, stdout, reg
 }
 
-func registerTokenStub(reg *httpmock.Registry) {
-	reg.Register(&httpmock.Stub{
-		Method: "POST",
-		URL:    "/open-apis/auth/v3/tenant_access_token/internal",
-		Body: map[string]interface{}{
-			"code":                0,
-			"tenant_access_token": "t-test-token",
-			"expire":              7200,
-		},
-	})
-}
-
 func withBaseWorkingDir(t *testing.T, dir string) {
 	t.Helper()
 	cwd, err := os.Getwd()
@@ -72,7 +60,6 @@ func runShortcut(t *testing.T, shortcut common.Shortcut, args []string, factory 
 
 func TestBaseWorkspaceExecuteCreate(t *testing.T) {
 	factory, stdout, reg := newExecuteFactory(t)
-	registerTokenStub(reg)
 	reg.Register(&httpmock.Stub{
 		Method: "POST",
 		URL:    "/open-apis/base/v3/bases",
@@ -92,7 +79,6 @@ func TestBaseWorkspaceExecuteCreate(t *testing.T) {
 func TestBaseWorkspaceExecuteGetAndCopy(t *testing.T) {
 	t.Run("get", func(t *testing.T) {
 		factory, stdout, reg := newExecuteFactory(t)
-		registerTokenStub(reg)
 		reg.Register(&httpmock.Stub{
 			Method: "GET",
 			URL:    "/open-apis/base/v3/bases/app_x",
@@ -111,7 +97,6 @@ func TestBaseWorkspaceExecuteGetAndCopy(t *testing.T) {
 
 	t.Run("copy", func(t *testing.T) {
 		factory, stdout, reg := newExecuteFactory(t)
-		registerTokenStub(reg)
 		reg.Register(&httpmock.Stub{
 			Method: "POST",
 			URL:    "/open-apis/base/v3/bases/app_src/copy",
@@ -132,7 +117,6 @@ func TestBaseWorkspaceExecuteGetAndCopy(t *testing.T) {
 
 func TestBaseHistoryExecute(t *testing.T) {
 	factory, stdout, reg := newExecuteFactory(t)
-	registerTokenStub(reg)
 	reg.Register(&httpmock.Stub{
 		Method: "GET",
 		URL:    "/open-apis/base/v3/bases/app_x/record_history",
@@ -151,7 +135,6 @@ func TestBaseHistoryExecute(t *testing.T) {
 
 func TestBaseFieldExecuteUpdate(t *testing.T) {
 	factory, stdout, reg := newExecuteFactory(t)
-	registerTokenStub(reg)
 	reg.Register(&httpmock.Stub{
 		Method: "PUT",
 		URL:    "/open-apis/base/v3/bases/app_x/tables/tbl_x/fields/fld_x",
@@ -168,9 +151,89 @@ func TestBaseFieldExecuteUpdate(t *testing.T) {
 	}
 }
 
+func TestBaseObjectJSONShortcutsRejectArrayInDryRun(t *testing.T) {
+	tests := []struct {
+		name     string
+		shortcut common.Shortcut
+		args     []string
+	}{
+		{
+			name:     "field create",
+			shortcut: BaseFieldCreate,
+			args:     []string{"+field-create", "--base-token", "app_x", "--table-id", "tbl_x", "--json", `[]`, "--dry-run"},
+		},
+		{
+			name:     "field update",
+			shortcut: BaseFieldUpdate,
+			args:     []string{"+field-update", "--base-token", "app_x", "--table-id", "tbl_x", "--field-id", "fld_x", "--json", `[]`, "--dry-run"},
+		},
+		{
+			name:     "record search",
+			shortcut: BaseRecordSearch,
+			args:     []string{"+record-search", "--base-token", "app_x", "--table-id", "tbl_x", "--json", `[]`, "--dry-run"},
+		},
+		{
+			name:     "record upsert",
+			shortcut: BaseRecordUpsert,
+			args:     []string{"+record-upsert", "--base-token", "app_x", "--table-id", "tbl_x", "--json", `[]`, "--dry-run"},
+		},
+		{
+			name:     "record batch create",
+			shortcut: BaseRecordBatchCreate,
+			args:     []string{"+record-batch-create", "--base-token", "app_x", "--table-id", "tbl_x", "--json", `[]`, "--dry-run"},
+		},
+		{
+			name:     "record batch update",
+			shortcut: BaseRecordBatchUpdate,
+			args:     []string{"+record-batch-update", "--base-token", "app_x", "--table-id", "tbl_x", "--json", `[]`, "--dry-run"},
+		},
+		{
+			name:     "view set filter",
+			shortcut: BaseViewSetFilter,
+			args:     []string{"+view-set-filter", "--base-token", "app_x", "--table-id", "tbl_x", "--view-id", "vew_x", "--json", `[]`, "--dry-run"},
+		},
+		{
+			name:     "view set visible fields",
+			shortcut: BaseViewSetVisibleFields,
+			args:     []string{"+view-set-visible-fields", "--base-token", "app_x", "--table-id", "tbl_x", "--view-id", "vew_x", "--json", `[]`, "--dry-run"},
+		},
+		{
+			name:     "view set card",
+			shortcut: BaseViewSetCard,
+			args:     []string{"+view-set-card", "--base-token", "app_x", "--table-id", "tbl_x", "--view-id", "vew_x", "--json", `[]`, "--dry-run"},
+		},
+		{
+			name:     "view set timebar",
+			shortcut: BaseViewSetTimebar,
+			args:     []string{"+view-set-timebar", "--base-token", "app_x", "--table-id", "tbl_x", "--view-id", "vew_x", "--json", `[]`, "--dry-run"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			factory, stdout, _ := newExecuteFactory(t)
+			err := runShortcut(t, tt.shortcut, tt.args, factory, stdout)
+			if err == nil {
+				t.Fatal("expected error")
+			}
+			if !strings.Contains(err.Error(), "--json must be a JSON object") {
+				t.Fatalf("err=%v", err)
+			}
+			if !strings.Contains(err.Error(), "lark-base skill") {
+				t.Fatalf("err=%v", err)
+			}
+			if strings.Contains(err.Error(), "array") {
+				t.Fatalf("err should not mention array: %v", err)
+			}
+			if got := stdout.String(); got != "" {
+				t.Fatalf("stdout=%q, want empty", got)
+			}
+		})
+	}
+}
+
 func TestBaseTableExecuteCreate(t *testing.T) {
 	factory, stdout, reg := newExecuteFactory(t)
-	registerTokenStub(reg)
 	reg.Register(&httpmock.Stub{
 		Method: "POST",
 		URL:    "/open-apis/base/v3/bases/app_x/tables",
@@ -214,7 +277,6 @@ func TestBaseTableExecuteCreate(t *testing.T) {
 
 func TestBaseTableExecuteUpdate(t *testing.T) {
 	factory, stdout, reg := newExecuteFactory(t)
-	registerTokenStub(reg)
 	reg.Register(&httpmock.Stub{
 		Method: "PATCH",
 		URL:    "/open-apis/base/v3/bases/app_x/tables/tbl_x",
@@ -233,7 +295,6 @@ func TestBaseTableExecuteUpdate(t *testing.T) {
 
 func TestBaseRecordExecuteUpsertUpdate(t *testing.T) {
 	factory, stdout, reg := newExecuteFactory(t)
-	registerTokenStub(reg)
 	reg.Register(&httpmock.Stub{
 		Method: "PATCH",
 		URL:    "/open-apis/base/v3/bases/app_x/tables/tbl_x/records/rec_x",
@@ -252,7 +313,6 @@ func TestBaseRecordExecuteUpsertUpdate(t *testing.T) {
 
 func TestBaseViewExecuteRename(t *testing.T) {
 	factory, stdout, reg := newExecuteFactory(t)
-	registerTokenStub(reg)
 	reg.Register(&httpmock.Stub{
 		Method: "PATCH",
 		URL:    "/open-apis/base/v3/bases/app_x/tables/tbl_x/views/vew_x",
@@ -272,7 +332,6 @@ func TestBaseViewExecuteRename(t *testing.T) {
 func TestBaseViewExecutePropertyActions(t *testing.T) {
 	t.Run("set-group", func(t *testing.T) {
 		factory, stdout, reg := newExecuteFactory(t)
-		registerTokenStub(reg)
 		reg.Register(&httpmock.Stub{
 			Method: "PUT",
 			URL:    "/open-apis/base/v3/bases/app_x/tables/tbl_x/views/vew_x/group",
@@ -281,7 +340,7 @@ func TestBaseViewExecutePropertyActions(t *testing.T) {
 				"data": []interface{}{map[string]interface{}{"field": "fld_status", "desc": false}},
 			},
 		})
-		if err := runShortcut(t, BaseViewSetGroup, []string{"+view-set-group", "--base-token", "app_x", "--table-id", "tbl_x", "--view-id", "vew_x", "--json", `[{"field":"fld_status","desc":false}]`}, factory, stdout); err != nil {
+		if err := runShortcut(t, BaseViewSetGroup, []string{"+view-set-group", "--base-token", "app_x", "--table-id", "tbl_x", "--view-id", "vew_x", "--json", `{"group_config":[{"field":"fld_status","desc":false}]}`}, factory, stdout); err != nil {
 			t.Fatalf("err=%v", err)
 		}
 		if got := stdout.String(); !strings.Contains(got, `"group"`) || !strings.Contains(got, `"fld_status"`) {
@@ -291,7 +350,6 @@ func TestBaseViewExecutePropertyActions(t *testing.T) {
 
 	t.Run("set-sort", func(t *testing.T) {
 		factory, stdout, reg := newExecuteFactory(t)
-		registerTokenStub(reg)
 		reg.Register(&httpmock.Stub{
 			Method: "PUT",
 			URL:    "/open-apis/base/v3/bases/app_x/tables/tbl_x/views/vew_x/sort",
@@ -300,7 +358,7 @@ func TestBaseViewExecutePropertyActions(t *testing.T) {
 				"data": []interface{}{map[string]interface{}{"field": "fld_amount", "desc": true}},
 			},
 		})
-		if err := runShortcut(t, BaseViewSetSort, []string{"+view-set-sort", "--base-token", "app_x", "--table-id", "tbl_x", "--view-id", "vew_x", "--json", `[{"field":"fld_amount","desc":true}]`}, factory, stdout); err != nil {
+		if err := runShortcut(t, BaseViewSetSort, []string{"+view-set-sort", "--base-token", "app_x", "--table-id", "tbl_x", "--view-id", "vew_x", "--json", `{"sort_config":[{"field":"fld_amount","desc":true}]}`}, factory, stdout); err != nil {
 			t.Fatalf("err=%v", err)
 		}
 		if got := stdout.String(); !strings.Contains(got, `"sort"`) || !strings.Contains(got, `"fld_amount"`) {
@@ -313,7 +371,6 @@ func TestBaseViewExecutePropertyActions(t *testing.T) {
 func TestBaseFieldExecuteCRUD(t *testing.T) {
 	t.Run("list", func(t *testing.T) {
 		factory, stdout, reg := newExecuteFactory(t)
-		registerTokenStub(reg)
 		reg.Register(&httpmock.Stub{
 			Method: "GET",
 			URL:    "limit=1&offset=0",
@@ -327,14 +384,13 @@ func TestBaseFieldExecuteCRUD(t *testing.T) {
 		if err := runShortcut(t, BaseFieldList, []string{"+field-list", "--base-token", "app_x", "--table-id", "tbl_x", "--offset", "0", "--limit", "1"}, factory, stdout); err != nil {
 			t.Fatalf("err=%v", err)
 		}
-		if got := stdout.String(); !strings.Contains(got, `"total": 2`) || !strings.Contains(got, `"field_name": "Amount"`) {
+		if got := stdout.String(); !strings.Contains(got, `"total": 2`) || !strings.Contains(got, `"fields"`) || !strings.Contains(got, `"name": "Amount"`) || strings.Contains(got, `"items"`) || strings.Contains(got, `"offset"`) || strings.Contains(got, `"limit"`) || strings.Contains(got, `"count"`) || strings.Contains(got, `"field_name": "Amount"`) {
 			t.Fatalf("stdout=%s", got)
 		}
 	})
 
 	t.Run("get", func(t *testing.T) {
 		factory, stdout, reg := newExecuteFactory(t)
-		registerTokenStub(reg)
 		reg.Register(&httpmock.Stub{
 			Method: "GET",
 			URL:    "/open-apis/base/v3/bases/app_x/tables/tbl_x/fields/fld_x",
@@ -353,7 +409,6 @@ func TestBaseFieldExecuteCRUD(t *testing.T) {
 
 	t.Run("create", func(t *testing.T) {
 		factory, stdout, reg := newExecuteFactory(t)
-		registerTokenStub(reg)
 		reg.Register(&httpmock.Stub{
 			Method: "POST",
 			URL:    "/open-apis/base/v3/bases/app_x/tables/tbl_x/fields",
@@ -372,7 +427,6 @@ func TestBaseFieldExecuteCRUD(t *testing.T) {
 
 	t.Run("delete", func(t *testing.T) {
 		factory, stdout, reg := newExecuteFactory(t)
-		registerTokenStub(reg)
 		reg.Register(&httpmock.Stub{
 			Method: "DELETE",
 			URL:    "/open-apis/base/v3/bases/app_x/tables/tbl_x/fields/fld_x",
@@ -390,7 +444,6 @@ func TestBaseFieldExecuteCRUD(t *testing.T) {
 func TestBaseTableExecuteReadAndDelete(t *testing.T) {
 	t.Run("list", func(t *testing.T) {
 		factory, stdout, reg := newExecuteFactory(t)
-		registerTokenStub(reg)
 		reg.Register(&httpmock.Stub{
 			Method: "GET",
 			URL:    "limit=1&offset=0",
@@ -404,14 +457,13 @@ func TestBaseTableExecuteReadAndDelete(t *testing.T) {
 		if err := runShortcut(t, BaseTableList, []string{"+table-list", "--base-token", "app_x", "--limit", "1"}, factory, stdout); err != nil {
 			t.Fatalf("err=%v", err)
 		}
-		if got := stdout.String(); !strings.Contains(got, `"total": 2`) || !strings.Contains(got, `"table_name": "Alpha"`) {
+		if got := stdout.String(); !strings.Contains(got, `"total": 2`) || !strings.Contains(got, `"tables"`) || !strings.Contains(got, `"name": "Alpha"`) || strings.Contains(got, `"items"`) || strings.Contains(got, `"offset"`) || strings.Contains(got, `"limit"`) || strings.Contains(got, `"count"`) || strings.Contains(got, `"table_name": "Alpha"`) {
 			t.Fatalf("stdout=%s", got)
 		}
 	})
 
 	t.Run("list-http-404", func(t *testing.T) {
 		factory, stdout, reg := newExecuteFactory(t)
-		registerTokenStub(reg)
 		reg.Register(&httpmock.Stub{
 			Method: "GET",
 			URL:    "/open-apis/base/v3/bases/app_x/tables",
@@ -429,7 +481,6 @@ func TestBaseTableExecuteReadAndDelete(t *testing.T) {
 
 	t.Run("get", func(t *testing.T) {
 		factory, stdout, reg := newExecuteFactory(t)
-		registerTokenStub(reg)
 		reg.Register(&httpmock.Stub{
 			Method: "GET",
 			URL:    "/open-apis/base/v3/bases/app_x/tables/tbl_x",
@@ -457,14 +508,13 @@ func TestBaseTableExecuteReadAndDelete(t *testing.T) {
 		if err := runShortcut(t, BaseTableGet, []string{"+table-get", "--base-token", "app_x", "--table-id", "tbl_x"}, factory, stdout); err != nil {
 			t.Fatalf("err=%v", err)
 		}
-		if got := stdout.String(); !strings.Contains(got, `"name": "Orders"`) || !strings.Contains(got, `"primary_field": "fld_x"`) || !strings.Contains(got, `"vew_x"`) {
+		if got := stdout.String(); !strings.Contains(got, `"name": "Orders"`) || !strings.Contains(got, `"primary_field": "fld_x"`) || !strings.Contains(got, `"id": "fld_x"`) || !strings.Contains(got, `"name": "OrderNo"`) || !strings.Contains(got, `"id": "vew_x"`) || !strings.Contains(got, `"name": "Main"`) || strings.Contains(got, `"field_name": "OrderNo"`) || strings.Contains(got, `"view_name": "Main"`) {
 			t.Fatalf("stdout=%s", got)
 		}
 	})
 
 	t.Run("delete", func(t *testing.T) {
 		factory, stdout, reg := newExecuteFactory(t)
-		registerTokenStub(reg)
 		reg.Register(&httpmock.Stub{
 			Method: "DELETE",
 			URL:    "/open-apis/base/v3/bases/app_x/tables/tbl_x",
@@ -482,7 +532,6 @@ func TestBaseTableExecuteReadAndDelete(t *testing.T) {
 func TestBaseRecordExecuteReadCreateDelete(t *testing.T) {
 	t.Run("list", func(t *testing.T) {
 		factory, stdout, reg := newExecuteFactory(t)
-		registerTokenStub(reg)
 		reg.Register(&httpmock.Stub{
 			Method: "GET",
 			URL:    "limit=1&offset=0",
@@ -503,9 +552,54 @@ func TestBaseRecordExecuteReadCreateDelete(t *testing.T) {
 		}
 	})
 
+	t.Run("list with fields and view", func(t *testing.T) {
+		factory, stdout, reg := newExecuteFactory(t)
+		reg.Register(&httpmock.Stub{
+			Method: "GET",
+			URL:    "field_id=Name&field_id=Age&limit=1&offset=0&view_id=vew_x",
+			Body: map[string]interface{}{
+				"code": 0,
+				"data": map[string]interface{}{
+					"fields":         []interface{}{"Name", "Age"},
+					"record_id_list": []interface{}{"rec_fields"},
+					"data":           []interface{}{[]interface{}{"Alice", 18}},
+					"total":          1,
+				},
+			},
+		})
+		if err := runShortcut(t, BaseRecordList, []string{"+record-list", "--base-token", "app_x", "--table-id", "tbl_x", "--view-id", "vew_x", "--limit", "1", "--field-id", "Name", "--field-id", "Age"}, factory, stdout); err != nil {
+			t.Fatalf("err=%v", err)
+		}
+		if got := stdout.String(); !strings.Contains(got, `"rec_fields"`) || !strings.Contains(got, `"Alice"`) {
+			t.Fatalf("stdout=%s", got)
+		}
+	})
+
+	t.Run("list with comma field", func(t *testing.T) {
+		factory, stdout, reg := newExecuteFactory(t)
+		reg.Register(&httpmock.Stub{
+			Method: "GET",
+			URL:    "field_id=A%2CB&field_id=C&limit=1&offset=0",
+			Body: map[string]interface{}{
+				"code": 0,
+				"data": map[string]interface{}{
+					"fields":         []interface{}{"A,B", "C"},
+					"record_id_list": []interface{}{"rec_json_fields"},
+					"data":           []interface{}{[]interface{}{"value-1", "value-2"}},
+					"total":          1,
+				},
+			},
+		})
+		if err := runShortcut(t, BaseRecordList, []string{"+record-list", "--base-token", "app_x", "--table-id", "tbl_x", "--limit", "1", "--field-id", "A,B", "--field-id", "C"}, factory, stdout); err != nil {
+			t.Fatalf("err=%v", err)
+		}
+		if got := stdout.String(); !strings.Contains(got, `"A,B"`) || !strings.Contains(got, `"rec_json_fields"`) {
+			t.Fatalf("stdout=%s", got)
+		}
+	})
+
 	t.Run("list new shape", func(t *testing.T) {
 		factory, stdout, reg := newExecuteFactory(t)
-		registerTokenStub(reg)
 		reg.Register(&httpmock.Stub{
 			Method: "GET",
 			URL:    "limit=1&offset=0",
@@ -527,9 +621,74 @@ func TestBaseRecordExecuteReadCreateDelete(t *testing.T) {
 		}
 	})
 
+	t.Run("search", func(t *testing.T) {
+		factory, stdout, reg := newExecuteFactory(t)
+		searchStub := &httpmock.Stub{
+			Method: "POST",
+			URL:    "/open-apis/base/v3/bases/app_x/tables/tbl_x/records/search",
+			Body: map[string]interface{}{
+				"code": 0,
+				"data": map[string]interface{}{
+					"fields":         []interface{}{"Title", "Owner"},
+					"field_id_list":  []interface{}{"fld_title", "fld_owner"},
+					"record_id_list": []interface{}{"rec_1"},
+					"data":           []interface{}{[]interface{}{"Created by AI", "Alice"}},
+					"has_more":       false,
+					"query_context": map[string]interface{}{
+						"record_scope": "filtered_records",
+						"field_scope":  "selected_fields",
+						"search_scope": "fld_title(Title)",
+					},
+				},
+			},
+		}
+		reg.Register(searchStub)
+		if err := runShortcut(
+			t,
+			BaseRecordSearch,
+			[]string{
+				"+record-search",
+				"--base-token", "app_x",
+				"--table-id", "tbl_x",
+				"--json", `{"view_id":"vew_x","keyword":"Created","search_fields":["Title","fld_owner"],"select_fields":["Title","fld_owner"],"offset":0,"limit":2}`,
+			},
+			factory,
+			stdout,
+		); err != nil {
+			t.Fatalf("err=%v", err)
+		}
+		if got := stdout.String(); !strings.Contains(got, `"record_id_list"`) || !strings.Contains(got, `"rec_1"`) || !strings.Contains(got, `"query_context"`) {
+			t.Fatalf("stdout=%s", got)
+		}
+		body := string(searchStub.CapturedBody)
+		if !strings.Contains(body, `"view_id":"vew_x"`) ||
+			!strings.Contains(body, `"keyword":"Created"`) ||
+			!strings.Contains(body, `"search_fields":["Title","fld_owner"]`) ||
+			!strings.Contains(body, `"select_fields":["Title","fld_owner"]`) ||
+			!strings.Contains(body, `"offset":0`) ||
+			!strings.Contains(body, `"limit":2`) {
+			t.Fatalf("captured body=%s", body)
+		}
+	})
+
+	t.Run("list legacy fields flag rejected", func(t *testing.T) {
+		factory, stdout, _ := newExecuteFactory(t)
+		err := runShortcut(t, BaseRecordList, []string{"+record-list", "--base-token", "app_x", "--table-id", "tbl_x", "--fields", "Name"}, factory, stdout)
+		if err == nil || !strings.Contains(err.Error(), "unknown flag: --fields") {
+			t.Fatalf("err=%v", err)
+		}
+	})
+
+	t.Run("list legacy fields flag rejected in dry-run", func(t *testing.T) {
+		factory, stdout, _ := newExecuteFactory(t)
+		err := runShortcut(t, BaseRecordList, []string{"+record-list", "--base-token", "app_x", "--table-id", "tbl_x", "--fields", "Name", "--dry-run"}, factory, stdout)
+		if err == nil || !strings.Contains(err.Error(), "unknown flag: --fields") {
+			t.Fatalf("err=%v", err)
+		}
+	})
+
 	t.Run("get", func(t *testing.T) {
 		factory, stdout, reg := newExecuteFactory(t)
-		registerTokenStub(reg)
 		reg.Register(&httpmock.Stub{
 			Method: "GET",
 			URL:    "/open-apis/base/v3/bases/app_x/tables/tbl_x/records/rec_1",
@@ -552,7 +711,6 @@ func TestBaseRecordExecuteReadCreateDelete(t *testing.T) {
 
 	t.Run("get passthrough fallback", func(t *testing.T) {
 		factory, stdout, reg := newExecuteFactory(t)
-		registerTokenStub(reg)
 		reg.Register(&httpmock.Stub{
 			Method: "GET",
 			URL:    "/open-apis/base/v3/bases/app_x/tables/tbl_x/records/rec_2",
@@ -571,7 +729,6 @@ func TestBaseRecordExecuteReadCreateDelete(t *testing.T) {
 
 	t.Run("create", func(t *testing.T) {
 		factory, stdout, reg := newExecuteFactory(t)
-		registerTokenStub(reg)
 		reg.Register(&httpmock.Stub{
 			Method: "POST",
 			URL:    "/open-apis/base/v3/bases/app_x/tables/tbl_x/records",
@@ -588,9 +745,77 @@ func TestBaseRecordExecuteReadCreateDelete(t *testing.T) {
 		}
 	})
 
+	t.Run("batch create", func(t *testing.T) {
+		factory, stdout, reg := newExecuteFactory(t)
+		reg.Register(&httpmock.Stub{
+			Method: "POST",
+			URL:    "/open-apis/base/v3/bases/app_x/tables/tbl_x/records/batch_create",
+			Body: map[string]interface{}{
+				"code": 0,
+				"data": map[string]interface{}{
+					"fields":         []interface{}{"Name"},
+					"record_id_list": []interface{}{"rec_1", "rec_2"},
+					"data":           []interface{}{[]interface{}{"Alice"}, []interface{}{"Bob"}},
+				},
+			},
+		})
+		if err := runShortcut(t, BaseRecordBatchCreate, []string{"+record-batch-create", "--base-token", "app_x", "--table-id", "tbl_x", "--json", `{"fields":["Name"],"rows":[["Alice"],["Bob"]]}`}, factory, stdout); err != nil {
+			t.Fatalf("err=%v", err)
+		}
+		if got := stdout.String(); !strings.Contains(got, `"record_id_list"`) || !strings.Contains(got, `"rec_1"`) || !strings.Contains(got, `"Alice"`) {
+			t.Fatalf("stdout=%s", got)
+		}
+	})
+
+	t.Run("batch update", func(t *testing.T) {
+		factory, stdout, reg := newExecuteFactory(t)
+		reg.Register(&httpmock.Stub{
+			Method: "POST",
+			URL:    "/open-apis/base/v3/bases/app_x/tables/tbl_x/records/batch_update",
+			Body: map[string]interface{}{
+				"code": 0,
+				"data": map[string]interface{}{
+					"has_more":       false,
+					"record_id_list": []interface{}{"rec_1"},
+					"update":         map[string]interface{}{"Status": "Done"},
+				},
+			},
+		})
+		if err := runShortcut(t, BaseRecordBatchUpdate, []string{"+record-batch-update", "--base-token", "app_x", "--table-id", "tbl_x", "--json", `{"record_id_list":["rec_1"],"patch":{"Status":"Done"}}`}, factory, stdout); err != nil {
+			t.Fatalf("err=%v", err)
+		}
+		if got := stdout.String(); !strings.Contains(got, `"record_id_list"`) || !strings.Contains(got, `"update"`) || !strings.Contains(got, `"Done"`) {
+			t.Fatalf("stdout=%s", got)
+		}
+	})
+
+	t.Run("batch update passthrough", func(t *testing.T) {
+		factory, stdout, reg := newExecuteFactory(t)
+		updateStub := &httpmock.Stub{
+			Method: "POST",
+			URL:    "/open-apis/base/v3/bases/app_x/tables/tbl_x/records/batch_update",
+			Body: map[string]interface{}{
+				"code": 0,
+				"data": map[string]interface{}{
+					"record_id_list": []interface{}{"rec_1"},
+				},
+			},
+		}
+		reg.Register(updateStub)
+		if err := runShortcut(t, BaseRecordBatchUpdate, []string{"+record-batch-update", "--base-token", "app_x", "--table-id", "tbl_x", "--json", `{"record_id_list":["rec_1"],"patch":{"Name":"Alice","Status":"Done"}}`}, factory, stdout); err != nil {
+			t.Fatalf("err=%v", err)
+		}
+		if got := stdout.String(); !strings.Contains(got, `"record_id_list"`) || !strings.Contains(got, `"rec_1"`) {
+			t.Fatalf("stdout=%s", got)
+		}
+		body := string(updateStub.CapturedBody)
+		if !strings.Contains(body, `"record_id_list":["rec_1"]`) || !strings.Contains(body, `"patch":{"Name":"Alice","Status":"Done"}`) {
+			t.Fatalf("request body=%s", body)
+		}
+	})
+
 	t.Run("delete", func(t *testing.T) {
 		factory, stdout, reg := newExecuteFactory(t)
-		registerTokenStub(reg)
 		reg.Register(&httpmock.Stub{
 			Method: "DELETE",
 			URL:    "/open-apis/base/v3/bases/app_x/tables/tbl_x/records/rec_1",
@@ -606,7 +831,6 @@ func TestBaseRecordExecuteReadCreateDelete(t *testing.T) {
 
 	t.Run("upload attachment", func(t *testing.T) {
 		factory, stdout, reg := newExecuteFactory(t)
-		registerTokenStub(reg)
 
 		tmpFile, err := os.CreateTemp(t.TempDir(), "base-attachment-*.txt")
 		if err != nil {
@@ -722,9 +946,159 @@ func TestBaseRecordExecuteReadCreateDelete(t *testing.T) {
 		}
 	})
 
+	t.Run("upload attachment uses multipart for large file", func(t *testing.T) {
+		factory, stdout, reg := newExecuteFactory(t)
+
+		tmpFile, err := os.CreateTemp(t.TempDir(), "base-attachment-large-*.bin")
+		if err != nil {
+			t.Fatalf("CreateTemp() err=%v", err)
+		}
+		if err := tmpFile.Truncate(common.MaxDriveMediaUploadSinglePartSize + 1); err != nil {
+			t.Fatalf("Truncate() err=%v", err)
+		}
+		if err := tmpFile.Close(); err != nil {
+			t.Fatalf("Close() err=%v", err)
+		}
+		withBaseWorkingDir(t, filepath.Dir(tmpFile.Name()))
+
+		reg.Register(&httpmock.Stub{
+			Method: "GET",
+			URL:    "/open-apis/base/v3/bases/app_x/tables/tbl_x/fields/fld_att",
+			Body: map[string]interface{}{
+				"code": 0,
+				"data": map[string]interface{}{"id": "fld_att", "name": "附件", "type": "attachment"},
+			},
+		})
+		reg.Register(&httpmock.Stub{
+			Method: "GET",
+			URL:    "/open-apis/base/v3/bases/app_x/tables/tbl_x/records/rec_x",
+			Body: map[string]interface{}{
+				"code": 0,
+				"data": map[string]interface{}{
+					"record_id": "rec_x",
+					"fields":    map[string]interface{}{},
+				},
+			},
+		})
+
+		prepareStub := &httpmock.Stub{
+			Method: "POST",
+			URL:    "/open-apis/drive/v1/medias/upload_prepare",
+			Body: map[string]interface{}{
+				"code": 0,
+				"data": map[string]interface{}{
+					"upload_id":  "upload_big_1",
+					"block_size": float64(8 * 1024 * 1024),
+					"block_num":  float64(3),
+				},
+			},
+		}
+		reg.Register(prepareStub)
+
+		partStubs := make([]*httpmock.Stub, 0, 3)
+		for i := 0; i < 3; i++ {
+			stub := &httpmock.Stub{
+				Method: "POST",
+				URL:    "/open-apis/drive/v1/medias/upload_part",
+				Body: map[string]interface{}{
+					"code": 0,
+					"msg":  "ok",
+				},
+			}
+			partStubs = append(partStubs, stub)
+			reg.Register(stub)
+		}
+
+		finishStub := &httpmock.Stub{
+			Method: "POST",
+			URL:    "/open-apis/drive/v1/medias/upload_finish",
+			Body: map[string]interface{}{
+				"code": 0,
+				"data": map[string]interface{}{"file_token": "file_tok_big"},
+			},
+		}
+		reg.Register(finishStub)
+
+		updateStub := &httpmock.Stub{
+			Method: "PATCH",
+			URL:    "/open-apis/base/v3/bases/app_x/tables/tbl_x/records/rec_x",
+			Body: map[string]interface{}{
+				"code": 0,
+				"data": map[string]interface{}{
+					"record_id": "rec_x",
+					"fields": map[string]interface{}{
+						"附件": []interface{}{
+							map[string]interface{}{
+								"file_token":                "file_tok_big",
+								"name":                      "large-report.bin",
+								"deprecated_set_attachment": true,
+							},
+						},
+					},
+				},
+			},
+		}
+		reg.Register(updateStub)
+
+		if err := runShortcut(t, BaseRecordUploadAttachment, []string{
+			"+record-upload-attachment",
+			"--base-token", "app_x",
+			"--table-id", "tbl_x",
+			"--record-id", "rec_x",
+			"--field-id", "fld_att",
+			"--file", "./" + filepath.Base(tmpFile.Name()),
+			"--name", "large-report.bin",
+		}, factory, stdout); err != nil {
+			t.Fatalf("err=%v", err)
+		}
+
+		if got := stdout.String(); !strings.Contains(got, `"updated": true`) || !strings.Contains(got, `"file_tok_big"`) || !strings.Contains(got, `"large-report.bin"`) {
+			t.Fatalf("stdout=%s", got)
+		}
+
+		prepareBody := string(prepareStub.CapturedBody)
+		if !strings.Contains(prepareBody, `"file_name":"large-report.bin"`) ||
+			!strings.Contains(prepareBody, `"parent_type":"bitable_file"`) ||
+			!strings.Contains(prepareBody, `"parent_node":"app_x"`) ||
+			!strings.Contains(prepareBody, `"size":20971521`) {
+			t.Fatalf("prepare body=%s", prepareBody)
+		}
+
+		firstPartBody := string(partStubs[0].CapturedBody)
+		if !strings.Contains(firstPartBody, `name="upload_id"`) ||
+			!strings.Contains(firstPartBody, "upload_big_1") ||
+			!strings.Contains(firstPartBody, `name="seq"`) ||
+			!strings.Contains(firstPartBody, "\r\n0\r\n") ||
+			!strings.Contains(firstPartBody, `name="size"`) ||
+			!strings.Contains(firstPartBody, "8388608") {
+			t.Fatalf("first part body=%s", firstPartBody)
+		}
+
+		lastPartBody := string(partStubs[2].CapturedBody)
+		if !strings.Contains(lastPartBody, `name="seq"`) ||
+			!strings.Contains(lastPartBody, "\r\n2\r\n") ||
+			!strings.Contains(lastPartBody, `name="size"`) ||
+			!strings.Contains(lastPartBody, "4194305") {
+			t.Fatalf("last part body=%s", lastPartBody)
+		}
+
+		finishBody := string(finishStub.CapturedBody)
+		if !strings.Contains(finishBody, `"upload_id":"upload_big_1"`) ||
+			!strings.Contains(finishBody, `"block_num":3`) {
+			t.Fatalf("finish body=%s", finishBody)
+		}
+
+		updateBody := string(updateStub.CapturedBody)
+		if !strings.Contains(updateBody, `"附件"`) ||
+			!strings.Contains(updateBody, `"file_token":"file_tok_big"`) ||
+			!strings.Contains(updateBody, `"name":"large-report.bin"`) ||
+			!strings.Contains(updateBody, `"deprecated_set_attachment":true`) {
+			t.Fatalf("update body=%s", updateBody)
+		}
+	})
+
 	t.Run("upload attachment rejects non-attachment field", func(t *testing.T) {
 		factory, stdout, reg := newExecuteFactory(t)
-		registerTokenStub(reg)
 
 		tmpFile, err := os.CreateTemp(t.TempDir(), "base-not-attachment-*.txt")
 		if err != nil {
@@ -762,12 +1136,42 @@ func TestBaseRecordExecuteReadCreateDelete(t *testing.T) {
 			t.Fatalf("err=%v", err)
 		}
 	})
+
+	t.Run("upload attachment rejects file larger than 2GB", func(t *testing.T) {
+		factory, stdout, _ := newExecuteFactory(t)
+
+		tmpFile, err := os.CreateTemp(t.TempDir(), "base-too-large-*.bin")
+		if err != nil {
+			t.Fatalf("CreateTemp() err=%v", err)
+		}
+		if err := tmpFile.Truncate(2*1024*1024*1024 + 1); err != nil {
+			t.Fatalf("Truncate() err=%v", err)
+		}
+		if err := tmpFile.Close(); err != nil {
+			t.Fatalf("Close() err=%v", err)
+		}
+		withBaseWorkingDir(t, filepath.Dir(tmpFile.Name()))
+
+		err = runShortcut(t, BaseRecordUploadAttachment, []string{
+			"+record-upload-attachment",
+			"--base-token", "app_x",
+			"--table-id", "tbl_x",
+			"--record-id", "rec_x",
+			"--field-id", "fld_att",
+			"--file", "./" + filepath.Base(tmpFile.Name()),
+		}, factory, stdout)
+		if err == nil {
+			t.Fatal("expected validation error, got nil")
+		}
+		if !strings.Contains(err.Error(), "exceeds 2GB limit") {
+			t.Fatalf("err=%v", err)
+		}
+	})
 }
 
 func TestBaseViewExecuteReadCreateDeleteAndFilter(t *testing.T) {
 	t.Run("list", func(t *testing.T) {
 		factory, stdout, reg := newExecuteFactory(t)
-		registerTokenStub(reg)
 		reg.Register(&httpmock.Stub{
 			Method: "GET",
 			URL:    "limit=1&offset=0",
@@ -779,14 +1183,13 @@ func TestBaseViewExecuteReadCreateDeleteAndFilter(t *testing.T) {
 		if err := runShortcut(t, BaseViewList, []string{"+view-list", "--base-token", "app_x", "--table-id", "tbl_x", "--offset", "0", "--limit", "1"}, factory, stdout); err != nil {
 			t.Fatalf("err=%v", err)
 		}
-		if got := stdout.String(); !strings.Contains(got, `"total": 3`) || !strings.Contains(got, `"view_name": "Main"`) {
+		if got := stdout.String(); !strings.Contains(got, `"total": 3`) || !strings.Contains(got, `"views"`) || !strings.Contains(got, `"name": "Main"`) || strings.Contains(got, `"items"`) || strings.Contains(got, `"offset"`) || strings.Contains(got, `"limit"`) || strings.Contains(got, `"count"`) || strings.Contains(got, `"view_name": "Main"`) {
 			t.Fatalf("stdout=%s", got)
 		}
 	})
 
 	t.Run("get", func(t *testing.T) {
 		factory, stdout, reg := newExecuteFactory(t)
-		registerTokenStub(reg)
 		reg.Register(&httpmock.Stub{
 			Method: "GET",
 			URL:    "/open-apis/base/v3/bases/app_x/tables/tbl_x/views/vew_1",
@@ -805,7 +1208,6 @@ func TestBaseViewExecuteReadCreateDeleteAndFilter(t *testing.T) {
 
 	t.Run("create", func(t *testing.T) {
 		factory, stdout, reg := newExecuteFactory(t)
-		registerTokenStub(reg)
 		reg.Register(&httpmock.Stub{
 			Method: "POST",
 			URL:    "/open-apis/base/v3/bases/app_x/tables/tbl_x/views",
@@ -824,7 +1226,6 @@ func TestBaseViewExecuteReadCreateDeleteAndFilter(t *testing.T) {
 
 	t.Run("delete", func(t *testing.T) {
 		factory, stdout, reg := newExecuteFactory(t)
-		registerTokenStub(reg)
 		reg.Register(&httpmock.Stub{
 			Method: "DELETE",
 			URL:    "/open-apis/base/v3/bases/app_x/tables/tbl_x/views/vew_1",
@@ -840,7 +1241,6 @@ func TestBaseViewExecuteReadCreateDeleteAndFilter(t *testing.T) {
 
 	t.Run("set-filter", func(t *testing.T) {
 		factory, stdout, reg := newExecuteFactory(t)
-		registerTokenStub(reg)
 		reg.Register(&httpmock.Stub{
 			Method: "PUT",
 			URL:    "/open-apis/base/v3/bases/app_x/tables/tbl_x/views/vew_1/filter",
@@ -856,12 +1256,66 @@ func TestBaseViewExecuteReadCreateDeleteAndFilter(t *testing.T) {
 			t.Fatalf("stdout=%s", got)
 		}
 	})
+
+	t.Run("get-visible-fields", func(t *testing.T) {
+		factory, stdout, reg := newExecuteFactory(t)
+		reg.Register(&httpmock.Stub{
+			Method: "GET",
+			URL:    "/open-apis/base/v3/bases/app_x/tables/tbl_x/views/vew_1/visible_fields",
+			Body: map[string]interface{}{
+				"code": 0,
+				"data": []interface{}{"fld_primary", "fld_status"},
+			},
+		})
+		if err := runShortcut(t, BaseViewGetVisibleFields, []string{"+view-get-visible-fields", "--base-token", "app_x", "--table-id", "tbl_x", "--view-id", "vew_1"}, factory, stdout); err != nil {
+			t.Fatalf("err=%v", err)
+		}
+		if got := stdout.String(); !strings.Contains(got, `"visible_fields"`) || !strings.Contains(got, `"fld_primary"`) {
+			t.Fatalf("stdout=%s", got)
+		}
+	})
+
+	t.Run("set-visible-fields-array-invalid", func(t *testing.T) {
+		factory, stdout, _ := newExecuteFactory(t)
+		err := runShortcut(
+			t,
+			BaseViewSetVisibleFields,
+			[]string{"+view-set-visible-fields", "--base-token", "app_x", "--table-id", "tbl_x", "--view-id", "vew_1", "--json", `["fld_status"]`},
+			factory,
+			stdout,
+		)
+		if err == nil || !strings.Contains(err.Error(), "--json must be a JSON object") {
+			t.Fatalf("err=%v", err)
+		}
+	})
+
+	t.Run("set-visible-fields-object", func(t *testing.T) {
+		factory, stdout, reg := newExecuteFactory(t)
+		updateStub := &httpmock.Stub{
+			Method: "PUT",
+			URL:    "/open-apis/base/v3/bases/app_x/tables/tbl_x/views/vew_1/visible_fields",
+			Body: map[string]interface{}{
+				"code": 0,
+				"data": []interface{}{"fld_primary", "fld_status"},
+			},
+		}
+		reg.Register(updateStub)
+		if err := runShortcut(t, BaseViewSetVisibleFields, []string{"+view-set-visible-fields", "--base-token", "app_x", "--table-id", "tbl_x", "--view-id", "vew_1", "--json", `{"visible_fields":["fld_status"]}`}, factory, stdout); err != nil {
+			t.Fatalf("err=%v", err)
+		}
+		body := string(updateStub.CapturedBody)
+		if !strings.Contains(body, `"visible_fields":["fld_status"]`) {
+			t.Fatalf("request body=%s", body)
+		}
+		if strings.Contains(body, `{"visible_fields":{"visible_fields":`) {
+			t.Fatalf("request body double wrapped: %s", body)
+		}
+	})
 }
 
 func TestBaseTableExecuteListFallbackShapes(t *testing.T) {
 	t.Run("items-payload", func(t *testing.T) {
 		factory, stdout, reg := newExecuteFactory(t)
-		registerTokenStub(reg)
 		reg.Register(&httpmock.Stub{
 			Method: "GET",
 			URL:    "/open-apis/base/v3/bases/app_x/tables",
@@ -880,7 +1334,6 @@ func TestBaseTableExecuteListFallbackShapes(t *testing.T) {
 
 	t.Run("single-object-payload", func(t *testing.T) {
 		factory, stdout, reg := newExecuteFactory(t)
-		registerTokenStub(reg)
 		reg.Register(&httpmock.Stub{
 			Method: "GET",
 			URL:    "/open-apis/base/v3/bases/app_x/tables",
@@ -900,7 +1353,6 @@ func TestBaseTableExecuteListFallbackShapes(t *testing.T) {
 
 func TestBaseRecordExecuteListWithViewPagination(t *testing.T) {
 	factory, stdout, reg := newExecuteFactory(t)
-	registerTokenStub(reg)
 	reg.Register(&httpmock.Stub{
 		Method: "GET",
 		URL:    "view_id=vew_x",
@@ -923,7 +1375,6 @@ func TestBaseRecordExecuteListWithViewPagination(t *testing.T) {
 
 func TestBaseHistoryExecuteWithLinkFieldLimit(t *testing.T) {
 	factory, stdout, reg := newExecuteFactory(t)
-	registerTokenStub(reg)
 	reg.Register(&httpmock.Stub{
 		Method: "GET",
 		URL:    "max_version=2",
@@ -942,7 +1393,6 @@ func TestBaseHistoryExecuteWithLinkFieldLimit(t *testing.T) {
 
 func TestBaseFieldExecuteSearchOptions(t *testing.T) {
 	factory, stdout, reg := newExecuteFactory(t)
-	registerTokenStub(reg)
 	reg.Register(&httpmock.Stub{
 		Method: "GET",
 		URL:    "/open-apis/base/v3/bases/app_x/tables/tbl_x/fields/fld_amount/options",
@@ -962,7 +1412,6 @@ func TestBaseFieldExecuteSearchOptions(t *testing.T) {
 func TestBaseViewExecutePropertyGettersAndExtendedSetters(t *testing.T) {
 	t.Run("get-group", func(t *testing.T) {
 		factory, stdout, reg := newExecuteFactory(t)
-		registerTokenStub(reg)
 		reg.Register(&httpmock.Stub{Method: "GET", URL: "/open-apis/base/v3/bases/app_x/tables/tbl_x/views/vew_x/group", Body: map[string]interface{}{"code": 0, "data": []interface{}{map[string]interface{}{"field": "fld_status", "desc": false}}}})
 		if err := runShortcut(t, BaseViewGetGroup, []string{"+view-get-group", "--base-token", "app_x", "--table-id", "tbl_x", "--view-id", "vew_x"}, factory, stdout); err != nil {
 			t.Fatalf("err=%v", err)
@@ -974,7 +1423,6 @@ func TestBaseViewExecutePropertyGettersAndExtendedSetters(t *testing.T) {
 
 	t.Run("get-filter", func(t *testing.T) {
 		factory, stdout, reg := newExecuteFactory(t)
-		registerTokenStub(reg)
 		reg.Register(&httpmock.Stub{Method: "GET", URL: "/open-apis/base/v3/bases/app_x/tables/tbl_x/views/vew_x/filter", Body: map[string]interface{}{"code": 0, "data": map[string]interface{}{"conditions": []interface{}{map[string]interface{}{"field_name": "Status"}}}}})
 		if err := runShortcut(t, BaseViewGetFilter, []string{"+view-get-filter", "--base-token", "app_x", "--table-id", "tbl_x", "--view-id", "vew_x"}, factory, stdout); err != nil {
 			t.Fatalf("err=%v", err)
@@ -986,7 +1434,6 @@ func TestBaseViewExecutePropertyGettersAndExtendedSetters(t *testing.T) {
 
 	t.Run("get-sort", func(t *testing.T) {
 		factory, stdout, reg := newExecuteFactory(t)
-		registerTokenStub(reg)
 		reg.Register(&httpmock.Stub{Method: "GET", URL: "/open-apis/base/v3/bases/app_x/tables/tbl_x/views/vew_x/sort", Body: map[string]interface{}{"code": 0, "data": []interface{}{map[string]interface{}{"field": "fld_priority", "desc": true}}}})
 		if err := runShortcut(t, BaseViewGetSort, []string{"+view-get-sort", "--base-token", "app_x", "--table-id", "tbl_x", "--view-id", "vew_x"}, factory, stdout); err != nil {
 			t.Fatalf("err=%v", err)
@@ -998,7 +1445,6 @@ func TestBaseViewExecutePropertyGettersAndExtendedSetters(t *testing.T) {
 
 	t.Run("get-timebar", func(t *testing.T) {
 		factory, stdout, reg := newExecuteFactory(t)
-		registerTokenStub(reg)
 		reg.Register(&httpmock.Stub{Method: "GET", URL: "/open-apis/base/v3/bases/app_x/tables/tbl_x/views/vew_time/timebar", Body: map[string]interface{}{"code": 0, "data": map[string]interface{}{"start_time": "fld_start", "end_time": "fld_end", "title": "fld_title"}}})
 		if err := runShortcut(t, BaseViewGetTimebar, []string{"+view-get-timebar", "--base-token", "app_x", "--table-id", "tbl_x", "--view-id", "vew_time"}, factory, stdout); err != nil {
 			t.Fatalf("err=%v", err)
@@ -1010,7 +1456,6 @@ func TestBaseViewExecutePropertyGettersAndExtendedSetters(t *testing.T) {
 
 	t.Run("set-timebar", func(t *testing.T) {
 		factory, stdout, reg := newExecuteFactory(t)
-		registerTokenStub(reg)
 		reg.Register(&httpmock.Stub{Method: "PUT", URL: "/open-apis/base/v3/bases/app_x/tables/tbl_x/views/vew_time/timebar", Body: map[string]interface{}{"code": 0, "data": map[string]interface{}{"start_time": "fld_start", "end_time": "fld_end", "title": "fld_title"}}})
 		args := []string{"+view-set-timebar", "--base-token", "app_x", "--table-id", "tbl_x", "--view-id", "vew_time", "--json", `{"start_time":"fld_start","end_time":"fld_end","title":"fld_title"}`}
 		if err := runShortcut(t, BaseViewSetTimebar, args, factory, stdout); err != nil {
@@ -1023,7 +1468,6 @@ func TestBaseViewExecutePropertyGettersAndExtendedSetters(t *testing.T) {
 
 	t.Run("get-card", func(t *testing.T) {
 		factory, stdout, reg := newExecuteFactory(t)
-		registerTokenStub(reg)
 		reg.Register(&httpmock.Stub{Method: "GET", URL: "/open-apis/base/v3/bases/app_x/tables/tbl_x/views/vew_card/card", Body: map[string]interface{}{"code": 0, "data": map[string]interface{}{"cover_field": "fld_cover"}}})
 		if err := runShortcut(t, BaseViewGetCard, []string{"+view-get-card", "--base-token", "app_x", "--table-id", "tbl_x", "--view-id", "vew_card"}, factory, stdout); err != nil {
 			t.Fatalf("err=%v", err)
@@ -1035,7 +1479,6 @@ func TestBaseViewExecutePropertyGettersAndExtendedSetters(t *testing.T) {
 
 	t.Run("set-card", func(t *testing.T) {
 		factory, stdout, reg := newExecuteFactory(t)
-		registerTokenStub(reg)
 		reg.Register(&httpmock.Stub{Method: "PUT", URL: "/open-apis/base/v3/bases/app_x/tables/tbl_x/views/vew_card/card", Body: map[string]interface{}{"code": 0, "data": map[string]interface{}{"cover_field": "fld_cover"}}})
 		if err := runShortcut(t, BaseViewSetCard, []string{"+view-set-card", "--base-token", "app_x", "--table-id", "tbl_x", "--view-id", "vew_card", "--json", `{"cover_field":"fld_cover"}`}, factory, stdout); err != nil {
 			t.Fatalf("err=%v", err)

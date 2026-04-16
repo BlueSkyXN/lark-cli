@@ -26,22 +26,23 @@ var MailForward = common.Shortcut{
 		{Name: "message-id", Desc: "Required. Message ID to forward", Required: true},
 		{Name: "to", Desc: "Recipient email address(es), comma-separated"},
 		{Name: "body", Desc: "Body prepended before the forwarded message. Prefer HTML for rich formatting; plain text is also supported. Body type is auto-detected from the forward body and the original message. Use --plain-text to force plain-text mode."},
-		{Name: "from", Desc: "Sender address; also selects the mailbox to send from (defaults to the authenticated user's primary mailbox)"},
+		{Name: "from", Desc: "Sender email address for the From header. When using an alias (send_as) address, set this to the alias and use --mailbox for the owning mailbox. Defaults to the mailbox's primary address."},
+		{Name: "mailbox", Desc: "Mailbox email address that owns the draft (default: falls back to --from, then me). Use this when the sender (--from) differs from the mailbox, e.g. sending via an alias or send_as address."},
 		{Name: "cc", Desc: "CC email address(es), comma-separated"},
 		{Name: "bcc", Desc: "BCC email address(es), comma-separated"},
 		{Name: "plain-text", Type: "bool", Desc: "Force plain-text mode, ignoring all HTML auto-detection. Cannot be used with --inline."},
 		{Name: "attach", Desc: "Attachment file path(s), comma-separated, appended after original attachments (relative path only)"},
 		{Name: "inline", Desc: "Inline images as a JSON array. Each entry: {\"cid\":\"<unique-id>\",\"file_path\":\"<relative-path>\"}. All file_path values must be relative paths. Cannot be used with --plain-text. CID images are embedded via <img src=\"cid:...\"> in the HTML body. CID is a unique identifier, e.g. a random hex string like \"a1b2c3d4e5f6a7b8c9d0\"."},
 		{Name: "confirm-send", Type: "bool", Desc: "Send the forward immediately instead of saving as draft. Only use after the user has explicitly confirmed recipients and content."},
-	},
+		signatureFlag},
 	DryRun: func(ctx context.Context, runtime *common.RuntimeContext) *common.DryRunAPI {
 		messageId := runtime.Str("message-id")
 		to := runtime.Str("to")
 		confirmSend := runtime.Bool("confirm-send")
 		mailboxID := resolveComposeMailboxID(runtime)
-		desc := "Forward: fetch original message → fetch mailbox profile (default From) → save as draft"
+		desc := "Forward: fetch original message → resolve sender address → save as draft"
 		if confirmSend {
-			desc = "Forward (--confirm-send): fetch original message → fetch mailbox profile (default From) → create draft → send draft"
+			desc = "Forward (--confirm-send): fetch original message → resolve sender address → create draft → send draft"
 		}
 		api := common.NewDryRunAPI().
 			Desc(desc).
@@ -63,13 +64,15 @@ var MailForward = common.Shortcut{
 				return err
 			}
 		}
-		return validateComposeInlineAndAttachments(runtime.Str("attach"), runtime.Str("inline"), runtime.Bool("plain-text"), "")
+		if err := validateSignatureWithPlainText(runtime.Bool("plain-text"), runtime.Str("signature-id")); err != nil {
+			return err
+		}
+		return validateComposeInlineAndAttachments(runtime.FileIO(), runtime.Str("attach"), runtime.Str("inline"), runtime.Bool("plain-text"), "")
 	},
 	Execute: func(ctx context.Context, runtime *common.RuntimeContext) error {
 		messageId := runtime.Str("message-id")
 		to := runtime.Str("to")
 		body := runtime.Str("body")
-		fromFlag := runtime.Str("from")
 		ccFlag := runtime.Str("cc")
 		bccFlag := runtime.Str("bcc")
 		plainText := runtime.Bool("plain-text")
@@ -77,7 +80,12 @@ var MailForward = common.Shortcut{
 		inlineFlag := runtime.Str("inline")
 		confirmSend := runtime.Bool("confirm-send")
 
+		signatureID := runtime.Str("signature-id")
 		mailboxID := resolveComposeMailboxID(runtime)
+		sigResult, sigErr := resolveSignature(ctx, runtime, mailboxID, signatureID, runtime.Str("from"))
+		if sigErr != nil {
+			return sigErr
+		}
 		sourceMsg, err := fetchComposeSourceMessage(runtime, mailboxID, messageId)
 		if err != nil {
 			return fmt.Errorf("failed to fetch original message: %w", err)
@@ -87,19 +95,16 @@ var MailForward = common.Shortcut{
 		}
 		orig := sourceMsg.Original
 
-		senderEmail := fromFlag
+		senderEmail := resolveComposeSenderEmail(runtime)
 		if senderEmail == "" {
-			senderEmail = fetchCurrentUserEmail(runtime)
-			if senderEmail == "" {
-				senderEmail = orig.headTo
-			}
+			senderEmail = orig.headTo
 		}
 
 		if err := validateRecipientCount(to, ccFlag, bccFlag); err != nil {
 			return err
 		}
 
-		bld := emlbuilder.New().
+		bld := emlbuilder.New().WithFileIO(runtime.FileIO()).
 			Subject(buildForwardSubject(orig.subject)).
 			ToAddrs(parseNetAddrs(to))
 		if senderEmail != "" {
@@ -117,18 +122,48 @@ var MailForward = common.Shortcut{
 		if messageId != "" {
 			bld = bld.LMSReplyToMessageID(messageId)
 		}
-		useHTML := !plainText && (bodyIsHTML(body) || bodyIsHTML(orig.bodyRaw))
+		useHTML := !plainText && (bodyIsHTML(body) || bodyIsHTML(orig.bodyRaw) || sigResult != nil)
 		if strings.TrimSpace(inlineFlag) != "" && !useHTML {
 			return fmt.Errorf("--inline requires HTML mode, but neither the new body nor the original message contains HTML")
 		}
+		inlineSpecs, err := parseInlineSpecs(inlineFlag)
+		if err != nil {
+			return err
+		}
+		var autoResolvedPaths []string
 		if useHTML {
 			if err := validateInlineImageURLs(sourceMsg); err != nil {
 				return fmt.Errorf("forward blocked: %w", err)
 			}
 			processedBody := buildBodyDiv(body, bodyIsHTML(body))
-			bld = bld.HTMLBody([]byte(processedBody + buildForwardQuoteHTML(&orig)))
-			bld, err = addInlineImagesToBuilder(runtime, bld, sourceMsg.InlineImages)
+			forwardQuote := buildForwardQuoteHTML(&orig)
+			var srcCIDs []string
+			bld, srcCIDs, err = addInlineImagesToBuilder(runtime, bld, sourceMsg.InlineImages)
 			if err != nil {
+				return err
+			}
+			resolved, refs, resolveErr := draftpkg.ResolveLocalImagePaths(processedBody)
+			if resolveErr != nil {
+				return resolveErr
+			}
+			bodyWithSig := resolved
+			if sigResult != nil {
+				bodyWithSig += draftpkg.SignatureSpacing() + draftpkg.BuildSignatureHTML(sigResult.ID, sigResult.RenderedContent)
+			}
+			fullHTML := bodyWithSig + forwardQuote
+			bld = bld.HTMLBody([]byte(fullHTML))
+			bld = addSignatureImagesToBuilder(bld, sigResult)
+			var userCIDs []string
+			for _, ref := range refs {
+				bld = bld.AddFileInline(ref.FilePath, ref.CID)
+				autoResolvedPaths = append(autoResolvedPaths, ref.FilePath)
+				userCIDs = append(userCIDs, ref.CID)
+			}
+			for _, spec := range inlineSpecs {
+				bld = bld.AddFileInline(spec.FilePath, spec.CID)
+				userCIDs = append(userCIDs, spec.CID)
+			}
+			if err := validateInlineCIDs(bodyWithSig, append(userCIDs, signatureCIDs(sigResult)...), srcCIDs); err != nil {
 				return err
 			}
 		} else {
@@ -169,11 +204,8 @@ var MailForward = common.Shortcut{
 			}
 			bld = bld.Header("X-Lms-Large-Attachment-Ids", base64.StdEncoding.EncodeToString(idsJSON))
 		}
-		inlineSpecs, err := parseInlineSpecs(inlineFlag)
-		if err != nil {
-			return err
-		}
-		if err := checkAttachmentSizeLimit(append(splitByComma(attachFlag), inlineSpecFilePaths(inlineSpecs)...), origAttBytes, len(origAtts)); err != nil {
+		allFilePaths := append(append(splitByComma(attachFlag), inlineSpecFilePaths(inlineSpecs)...), autoResolvedPaths...)
+		if err := checkAttachmentSizeLimit(runtime.FileIO(), allFilePaths, origAttBytes, len(origAtts)); err != nil {
 			return err
 		}
 		for _, att := range origAtts {
@@ -181,9 +213,6 @@ var MailForward = common.Shortcut{
 		}
 		for _, path := range splitByComma(attachFlag) {
 			bld = bld.AddFileAttachment(path)
-		}
-		for _, spec := range inlineSpecs {
-			bld = bld.AddFileInline(spec.FilePath, spec.CID)
 		}
 		rawEML, err := bld.BuildBase64URL()
 		if err != nil {
@@ -206,10 +235,7 @@ var MailForward = common.Shortcut{
 		if err != nil {
 			return fmt.Errorf("failed to send forward (draft %s created but not sent): %w", draftID, err)
 		}
-		runtime.Out(map[string]interface{}{
-			"message_id": resData["message_id"],
-			"thread_id":  resData["thread_id"],
-		}, nil)
+		runtime.Out(buildSendResult(resData, mailboxID), nil)
 		hintMarkAsRead(runtime, mailboxID, messageId)
 		return nil
 	},
