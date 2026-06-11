@@ -10,12 +10,22 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
+	"net/http"
 	"os/exec"
 	"strings"
 	"time"
 
+	"github.com/larksuite/cli/internal/transport"
 	"github.com/larksuite/cli/internal/vfs"
 )
+
+// execLookPath is the LookPath implementation used by VerifyBinary.
+// It defaults to the standard library exec.LookPath but is swapped in tests
+// via lookPathMock to provide controlled binary resolution.
+//
+// Tests that mutate execLookPath must not call t.Parallel().
+var execLookPath = exec.LookPath
 
 // InstallMethod describes how the CLI was installed.
 type InstallMethod int
@@ -30,9 +40,15 @@ const (
 )
 
 const (
-	npmInstallTimeout   = 10 * time.Minute
-	skillsUpdateTimeout = 2 * time.Minute
-	verifyTimeout       = 10 * time.Second
+	npmInstallTimeout      = 10 * time.Minute
+	skillsUpdateTimeout    = 2 * time.Minute
+	skillsIndexMaxBodySize = 1 << 20
+	verifyTimeout          = 10 * time.Second
+)
+
+var (
+	skillsIndexFetchTimeout = 10 * time.Second
+	officialSkillsIndexURL  = "https://open.feishu.cn/.well-known/skills/index.json"
 )
 
 // DetectResult holds installation detection results.
@@ -71,12 +87,13 @@ func (r *NpmResult) CombinedOutput() string {
 // Platform-specific methods (PrepareSelfReplace, CleanupStaleFiles)
 // are in updater_unix.go and updater_windows.go.
 //
-// Override DetectOverride / NpmInstallOverride / SkillsUpdateOverride / VerifyOverride
+// Override DetectOverride / NpmInstallOverride / SkillsCommandOverride / VerifyOverride
 // / RestoreAvailableOverride for testing.
 type Updater struct {
 	DetectOverride           func() DetectResult
 	NpmInstallOverride       func(version string) *NpmResult
-	SkillsUpdateOverride     func() *NpmResult
+	SkillsIndexFetchOverride func() *NpmResult
+	SkillsCommandOverride    func(args ...string) *NpmResult
 	VerifyOverride           func(expectedVersion string) error
 	RestoreAvailableOverride func() bool
 
@@ -146,12 +163,78 @@ func (u *Updater) RunNpmInstall(version string) *NpmResult {
 	return r
 }
 
-// RunSkillsUpdate installs skills, trying the .well-known source first and
-// falling back to the GitHub repo on failure or timeout.
-func (u *Updater) RunSkillsUpdate() *NpmResult {
-	if u.SkillsUpdateOverride != nil {
-		return u.SkillsUpdateOverride()
+func (u *Updater) ListOfficialSkillsIndex() *NpmResult {
+	if u.SkillsIndexFetchOverride != nil {
+		return u.SkillsIndexFetchOverride()
 	}
+
+	r := &NpmResult{}
+	ctx, cancel := context.WithTimeout(context.Background(), skillsIndexFetchTimeout)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, officialSkillsIndexURL, nil)
+	if err != nil {
+		r.Err = err
+		return r
+	}
+
+	client := transport.NewHTTPClient(0)
+	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if req.URL.Scheme != "https" {
+			return fmt.Errorf("official skills index redirected to non-HTTPS URL: %s", req.URL.Redacted())
+		}
+		return nil
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		r.Err = err
+		return r
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		r.Err = fmt.Errorf("official skills index returned HTTP %d", resp.StatusCode)
+		return r
+	}
+
+	limited := io.LimitReader(resp.Body, skillsIndexMaxBodySize+1)
+	if _, err := io.Copy(&r.Stdout, limited); err != nil {
+		r.Err = err
+		return r
+	}
+	if r.Stdout.Len() > skillsIndexMaxBodySize {
+		r.Stdout.Reset()
+		r.Err = fmt.Errorf("official skills index exceeds %d bytes", skillsIndexMaxBodySize)
+		return r
+	}
+	return r
+}
+
+func (u *Updater) ListOfficialSkills() *NpmResult {
+	r := u.runSkillsListOfficial("https://open.feishu.cn")
+	if r.Err != nil {
+		r = u.runSkillsListOfficial("larksuite/cli")
+	}
+	return r
+}
+
+func (u *Updater) ListGlobalSkills() *NpmResult {
+	return u.runSkillsListGlobal()
+}
+
+func (u *Updater) ListGlobalSkillsJSON() *NpmResult {
+	return u.runSkillsCommand("-y", "skills", "ls", "-g", "--json")
+}
+
+func (u *Updater) InstallSkill(nameList []string) *NpmResult {
+	r := u.runSkillsInstall("https://open.feishu.cn", nameList)
+	if r.Err != nil {
+		r = u.runSkillsInstall("larksuite/cli", nameList)
+	}
+	return r
+}
+
+func (u *Updater) InstallAllSkills() *NpmResult {
 	r := u.runSkillsAdd("https://open.feishu.cn")
 	if r.Err != nil {
 		r = u.runSkillsAdd("larksuite/cli")
@@ -160,6 +243,28 @@ func (u *Updater) RunSkillsUpdate() *NpmResult {
 }
 
 func (u *Updater) runSkillsAdd(source string) *NpmResult {
+	return u.runSkillsCommand("-y", "skills", "add", source, "-g", "-y")
+}
+
+func (u *Updater) runSkillsListOfficial(source string) *NpmResult {
+	return u.runSkillsCommand("-y", "skills", "add", source, "--list")
+}
+
+func (u *Updater) runSkillsListGlobal() *NpmResult {
+	return u.runSkillsCommand("-y", "skills", "ls", "-g")
+}
+
+func (u *Updater) runSkillsInstall(source string, nameList []string) *NpmResult {
+	args := []string{"-y", "skills", "add", source, "-s"}
+	args = append(args, nameList...)
+	args = append(args, "-g", "-y")
+	return u.runSkillsCommand(args...)
+}
+
+func (u *Updater) runSkillsCommand(args ...string) *NpmResult {
+	if u.SkillsCommandOverride != nil {
+		return u.SkillsCommandOverride(args...)
+	}
 	r := &NpmResult{}
 	npxPath, err := exec.LookPath("npx")
 	if err != nil {
@@ -168,7 +273,7 @@ func (u *Updater) runSkillsAdd(source string) *NpmResult {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), skillsUpdateTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, npxPath, "-y", "skills", "add", source, "-g", "-y")
+	cmd := exec.CommandContext(ctx, npxPath, args...)
 	cmd.Stdout = &r.Stdout
 	cmd.Stderr = &r.Stderr
 	r.Err = cmd.Run()
@@ -186,13 +291,13 @@ func (u *Updater) VerifyBinary(expectedVersion string) error {
 	if u.VerifyOverride != nil {
 		return u.VerifyOverride(expectedVersion)
 	}
-	// Prefer the current executable path (what the user actually launched).
-	// Use Executable() directly without EvalSymlinks — after npm install the
-	// symlink target may have changed, but the path itself is still valid for
-	// execution. Fall back to LookPath only if Executable() fails entirely.
-	exe, err := vfs.Executable()
+	// Prefer PATH resolution so npm global bin symlinks pick up the newly
+	// installed binary (#836). If `lark-cli` is not on PATH (e.g. the user
+	// invoked this process by absolute path), fall back to the running
+	// executable — same as the pre-#836 secondary resolution path.
+	exe, err := execLookPath("lark-cli")
 	if err != nil {
-		exe, err = exec.LookPath("lark-cli")
+		exe, err = vfs.Executable()
 		if err != nil {
 			return fmt.Errorf("cannot locate binary: %w", err)
 		}

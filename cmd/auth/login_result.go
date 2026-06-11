@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/larksuite/cli/errs"
 	larkauth "github.com/larksuite/cli/internal/auth"
 	"github.com/larksuite/cli/internal/cmdutil"
 	"github.com/larksuite/cli/internal/output"
@@ -128,7 +129,7 @@ func emptyIfNil(s []string) []string {
 	return s
 }
 
-// writeLoginScopeBreakdown renders the requested/newly granted/missing scope
+// writeLoginScopeBreakdown renders the requested/newly granted scope
 // breakdown to stderr.
 func writeLoginScopeBreakdown(errOut *cmdutil.IOStreams, msg *loginMsg, summary *loginScopeSummary) {
 	if summary == nil {
@@ -136,7 +137,6 @@ func writeLoginScopeBreakdown(errOut *cmdutil.IOStreams, msg *loginMsg, summary 
 	}
 	fmt.Fprintf(errOut.ErrOut, msg.RequestedScopes, formatScopeList(summary.Requested, msg.NoScopes))
 	fmt.Fprintf(errOut.ErrOut, msg.NewlyGrantedScopes, formatScopeList(summary.NewlyGranted, msg.NoScopes))
-	fmt.Fprintf(errOut.ErrOut, msg.MissingScopes, formatScopeList(summary.Missing, msg.NoScopes))
 }
 
 // writeLoginSuccess emits the successful login payload in either JSON or text
@@ -170,39 +170,28 @@ func handleLoginScopeIssue(opts *LoginOptions, msg *loginMsg, f *cmdutil.Factory
 		if loginSucceeded {
 			b, _ := json.Marshal(authorizationCompletePayload(openId, userName, issue.Summary, issue))
 			fmt.Fprintln(f.IOStreams.Out, string(b))
-			return nil
+			return output.ErrBare(output.ExitAuth)
 		}
-		detail := map[string]interface{}{
-			"requested": issue.Summary.Requested,
-			"granted":   issue.Summary.Granted,
-			"missing":   issue.Summary.Missing,
-		}
-		return &output.ExitError{
-			Code: output.ExitAuth,
-			Detail: &output.ErrDetail{
-				Type:    "missing_scope",
-				Message: issue.Message,
-				Hint:    issue.Hint,
-				Detail:  detail,
-			},
-		}
+		return errs.NewPermissionError(errs.SubtypeMissingScope, "%s", issue.Message).
+			WithHint("%s", issue.Hint).
+			WithIdentity("user").
+			WithRequestedScopes(issue.Summary.Requested...).
+			WithGrantedScopes(issue.Summary.Granted...).
+			WithMissingScopes(issue.Summary.Missing...)
 	}
 
 	fmt.Fprintln(f.IOStreams.ErrOut)
 	if loginSucceeded {
-		output.PrintSuccess(f.IOStreams.ErrOut, fmt.Sprintf(msg.LoginSuccess, userName, openId))
-	} else {
 		fmt.Fprintln(f.IOStreams.ErrOut, issue.Message)
-	}
-	if loginSucceeded {
+		if msg.AuthorizedUser != "" {
+			fmt.Fprintf(f.IOStreams.ErrOut, "%s\n", fmt.Sprintf(msg.AuthorizedUser, userName, openId))
+		}
+	} else {
 		fmt.Fprintln(f.IOStreams.ErrOut, issue.Message)
 	}
 	writeLoginScopeBreakdown(f.IOStreams, msg, issue.Summary)
 	if issue.Hint != "" {
 		fmt.Fprintln(f.IOStreams.ErrOut, issue.Hint)
-	}
-	if loginSucceeded {
-		return nil
 	}
 	return output.ErrBare(output.ExitAuth)
 }

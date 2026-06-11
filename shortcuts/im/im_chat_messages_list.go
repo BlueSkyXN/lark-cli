@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"strconv"
 
+	"github.com/larksuite/cli/errs"
 	"github.com/larksuite/cli/internal/output"
 	"github.com/larksuite/cli/shortcuts/common"
 	convertlib "github.com/larksuite/cli/shortcuts/im/convert_lib"
@@ -22,8 +23,8 @@ var ImChatMessageList = common.Shortcut{
 	Description: "List messages in a chat or P2P conversation; user/bot; accepts --chat-id or --user-id, resolves P2P chat_id, supports time range/sort/pagination",
 	Risk:        "read",
 	Scopes:      []string{"im:message:readonly"},
-	UserScopes:  []string{"im:message.group_msg:get_as_user", "im:message.p2p_msg:get_as_user", "contact:user.base:readonly"},
-	BotScopes:   []string{"im:message.group_msg", "im:message.p2p_msg:readonly"},
+	UserScopes:  []string{"im:message.group_msg:get_as_user", "im:message.p2p_msg:get_as_user", "im:message.reactions:read", "contact:user.base:readonly"},
+	BotScopes:   []string{"im:message.group_msg", "im:message.p2p_msg:readonly", "im:message.reactions:read"},
 	AuthTypes:   []string{"user", "bot"},
 	HasFormat:   true,
 	Flags: []common.Flag{
@@ -34,6 +35,8 @@ var ImChatMessageList = common.Shortcut{
 		{Name: "sort", Default: "desc", Desc: "sort order", Enum: []string{"asc", "desc"}},
 		{Name: "page-size", Default: "50", Desc: "page size (1-50)"},
 		{Name: "page-token", Desc: "pagination token for next page"},
+		{Name: "no-reactions", Type: "bool", Desc: "skip auto-fetching reactions for each message (default: enrichment enabled)"},
+		downloadResourcesFlag,
 	},
 	DryRun: func(ctx context.Context, runtime *common.RuntimeContext) *common.DryRunAPI {
 		d := common.NewDryRunAPI()
@@ -54,21 +57,29 @@ var ImChatMessageList = common.Shortcut{
 				dryParams[k] = vs[0]
 			}
 		}
-		return d.GET("/open-apis/im/v1/messages").Params(dryParams)
+		d = d.GET("/open-apis/im/v1/messages").Params(dryParams)
+		if !runtime.Bool("no-reactions") {
+			d = d.POST("/open-apis/im/v1/messages/reactions/batch_query").
+				Desc("Reaction enrichment: queries returned messages (including thread_replies expanded inline) in batches of up to 20. Pass --no-reactions to skip.")
+		}
+		if runtime.Bool("download-resources") {
+			d = d.Desc(downloadResourcesDryRunDesc)
+		}
+		return d
 	},
 	Validate: func(ctx context.Context, runtime *common.RuntimeContext) error {
 		// Under bot identity, --user-id is not supported; require --chat-id only.
 		if runtime.IsBot() {
 			if runtime.Str("user-id") != "" {
-				return common.FlagErrorf("--user-id requires user identity (--as user); use --chat-id when calling with bot identity")
+				return errs.NewValidationError(errs.SubtypeInvalidArgument, "--user-id requires user identity (--as user); use --chat-id when calling with bot identity").WithParam("--user-id")
 			}
 			if runtime.Str("chat-id") == "" {
-				return common.FlagErrorf("specify --chat-id (bot identity does not support --user-id)")
+				return errs.NewValidationError(errs.SubtypeInvalidArgument, "specify --chat-id (bot identity does not support --user-id)").WithParam("--chat-id")
 			}
 		} else {
-			if err := common.ExactlyOne(runtime, "chat-id", "user-id"); err != nil {
+			if err := common.ExactlyOneTyped(runtime, "chat-id", "user-id"); err != nil {
 				if runtime.Str("chat-id") == "" && runtime.Str("user-id") == "" {
-					return common.FlagErrorf("specify at least one of --chat-id or --user-id")
+					return errs.NewValidationError(errs.SubtypeInvalidArgument, "specify at least one of --chat-id or --user-id")
 				}
 				return err
 			}
@@ -76,12 +87,12 @@ var ImChatMessageList = common.Shortcut{
 
 		// Validate ID formats
 		if chatFlag := runtime.Str("chat-id"); chatFlag != "" {
-			if _, err := common.ValidateChatID(chatFlag); err != nil {
+			if _, err := common.ValidateChatIDTyped("--chat-id", chatFlag); err != nil {
 				return err
 			}
 		}
 		if userFlag := runtime.Str("user-id"); userFlag != "" {
-			if _, err := common.ValidateUserID(userFlag); err != nil {
+			if _, err := common.ValidateUserIDTyped("--user-id", userFlag); err != nil {
 				return err
 			}
 		}
@@ -103,7 +114,7 @@ var ImChatMessageList = common.Shortcut{
 			return err
 		}
 
-		data, err := runtime.DoAPIJSON(http.MethodGet, "/open-apis/im/v1/messages", params, nil)
+		data, err := runtime.DoAPIJSONTyped(http.MethodGet, "/open-apis/im/v1/messages", params, nil)
 		if err != nil {
 			return err
 		}
@@ -111,16 +122,32 @@ var ImChatMessageList = common.Shortcut{
 		hasMore, nextPageToken := common.PaginationMeta(data)
 
 		nameCache := make(map[string]string)
+		// Pre-fetch merge_forward sub-messages concurrently before the per-item
+		// conversion loop. Each merge_forward in the page would otherwise issue
+		// its own serial GET inside FormatMessageItem; N merge_forwards turned
+		// into N × ~1s of stall. Passing nameCache also lets the prefetch
+		// batch-resolve every sub-item's sender open_id in one contact API
+		// call, so the per-merge_forward render path doesn't fan out N more
+		// serial contact requests during the FormatMessageItem loop.
+		mergePrefetch := convertlib.PrefetchMergeForwardSubItems(runtime, rawItems, nameCache)
+
+		downloadResources := runtime.Bool("download-resources")
 		messages := make([]map[string]interface{}, 0, len(rawItems))
 		for _, item := range rawItems {
 			m, _ := item.(map[string]interface{})
-			messages = append(messages, convertlib.FormatMessageItem(m, runtime, nameCache))
+			messages = append(messages, convertlib.FormatMessageItemWithMergePrefetchOpts(m, runtime, nameCache, mergePrefetch, downloadResources))
 		}
 
 		// Enrich: resolve sender names for outer messages (reuses cache from merge_forward)
 		convertlib.ResolveSenderNames(runtime, messages, nameCache)
 		convertlib.AttachSenderNames(messages, nameCache)
-		convertlib.ExpandThreadReplies(runtime, messages, nameCache, convertlib.ThreadRepliesPerThread, convertlib.ThreadRepliesTotalLimit)
+		convertlib.ExpandThreadRepliesWithResources(runtime, messages, nameCache, convertlib.ThreadRepliesPerThread, convertlib.ThreadRepliesTotalLimit, downloadResources)
+		if !runtime.Bool("no-reactions") {
+			convertlib.EnrichReactions(runtime, messages)
+		}
+		if downloadResources {
+			enrichMessageResourceDownloads(runtime, messages)
+		}
 
 		outData := map[string]interface{}{
 			"messages":   messages,
@@ -172,11 +199,12 @@ func buildChatMessageListParams(sortFlag, pageSizeStr, chatId string) larkcore.Q
 		pageSize = min(max(n, 1), 50)
 	}
 	return larkcore.QueryParams{
-		"container_id_type":     []string{"chat"},
-		"container_id":          []string{chatId},
-		"sort_type":             []string{sortType},
-		"page_size":             []string{strconv.Itoa(pageSize)},
-		"card_msg_content_type": []string{"raw_card_content"},
+		"container_id_type":         []string{"chat"},
+		"container_id":              []string{chatId},
+		"sort_type":                 []string{sortType},
+		"page_size":                 []string{strconv.Itoa(pageSize)},
+		"card_msg_content_type":     []string{"raw_card_content"},
+		"only_thread_root_messages": []string{"true"},
 	}
 }
 
@@ -186,14 +214,14 @@ func buildChatMessageListRequest(runtime *common.RuntimeContext, chatId string) 
 	if startFlag := runtime.Str("start"); startFlag != "" {
 		startTime, err := common.ParseTime(startFlag)
 		if err != nil {
-			return nil, output.ErrValidation("--start: %v", err)
+			return nil, errs.NewValidationError(errs.SubtypeInvalidArgument, "--start: %v", err).WithParam("--start")
 		}
 		params["start_time"] = []string{startTime}
 	}
 	if endFlag := runtime.Str("end"); endFlag != "" {
 		endTime, err := common.ParseTime(endFlag, "end")
 		if err != nil {
-			return nil, output.ErrValidation("--end: %v", err)
+			return nil, errs.NewValidationError(errs.SubtypeInvalidArgument, "--end: %v", err).WithParam("--end")
 		}
 		params["end_time"] = []string{endTime}
 	}
@@ -217,7 +245,7 @@ func resolveChatIDForMessagesList(runtime *common.RuntimeContext, dryRun bool) (
 		return "", err
 	}
 	if chatId == "" {
-		return "", output.Errorf(output.ExitAPI, "not_found", "P2P chat not found for this user")
+		return "", errs.NewAPIError(errs.SubtypeNotFound, "P2P chat not found for this user")
 	}
 	return chatId, nil
 }

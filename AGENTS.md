@@ -15,12 +15,30 @@ make unit-test      # Required before PR (runs with -race)
 make test           # Full: vet + unit + integration
 ```
 
+## Notification Opt-Outs
+
+`lark-cli` emits two notice types into JSON envelope `_notice` to nudge AI agents toward fixes:
+
+- `_notice.update` — a newer binary is available on npm
+- `_notice.skills` — locally installed skills are out of sync with the running binary
+
+To suppress them in non-CI scripts (CI envs are auto-skipped):
+
+| Env var | Effect |
+|---------|--------|
+| `LARKSUITE_CLI_NO_UPDATE_NOTIFIER=1` | Suppress `_notice.update` |
+| `LARKSUITE_CLI_NO_SKILLS_NOTIFIER=1` | Suppress `_notice.skills` |
+
+Both notices recommend the same fix command: `lark-cli update`. The skills notice's `current` field is `""` when skills have never been synced (cold start) and a version string when synced for an older binary (drift).
+
 ## Pre-PR Checks (match CI gates)
 
 1. `make unit-test`
-2. `go mod tidy` — must not change `go.mod`/`go.sum`
-3. `go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.1.6 run --new-from-rev=origin/main`
-4. If dependencies changed: `go run github.com/google/go-licenses/v2@v2.0.1 check ./... --disallowed_types=forbidden,restricted,reciprocal,unknown`
+2. `go vet ./...`
+3. `gofmt -l .` — must produce no output
+4. `go mod tidy` — must not change `go.mod`/`go.sum`
+5. `go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.1.6 run --new-from-rev=origin/main`
+6. If dependencies changed: `go run github.com/google/go-licenses/v2@v2.0.1 check ./... --disallowed_types=forbidden,restricted,reciprocal,unknown`
 
 ## Commit & PR
 
@@ -57,7 +75,31 @@ The one rule to internalize: **every error message you write will be parsed by a
 
 ### Structured errors in commands
 
-`RunE` functions must return `output.Errorf` / `output.ErrWithHint` — never bare `fmt.Errorf`. AI agents parse stderr as JSON; bare errors break this contract.
+Command-facing failures must be typed `errs.*` errors — never the legacy `output.Err*` helpers and never a final bare `fmt.Errorf`. AI agents parse the stderr envelope's `type` / `subtype` / `param` / `hint` fields to decide their next action; the full taxonomy lives in `errs/ERROR_CONTRACT.md`.
+
+Picking a constructor:
+
+| Failure | Constructor |
+|---------|-------------|
+| User flag/arg fails validation | `errs.NewValidationError(errs.SubtypeInvalidArgument, ...).WithParam("--flag")` |
+| Valid request, wrong system state | `errs.NewValidationError(errs.SubtypeFailedPrecondition, ...).WithHint(...)` |
+| Lark API returned `code != 0` | `runtime.CallAPITyped` (shortcuts) / `errclass.BuildAPIError` (raw responses) — never hand-build |
+| Network / transport failure | `errs.NewNetworkError(errs.SubtypeNetworkTransport, ...)` |
+| Local file I/O failure | `errs.NewInternalError(errs.SubtypeFileIO, ...)` — validate the path first (`validate.SafeInputPath` / `SafeOutputPath`) and use `vfs.*` |
+| Unclassified lower-layer error as final | `errs.NewInternalError(errs.SubtypeUnknown, ...).WithCause(err)` |
+| Lower layer already returned a typed error | pass it through unchanged — re-wrapping downgrades its classification |
+
+Signatures that are easy to guess wrong:
+
+- `runtime.CallAPITyped(method, url string, params map[string]interface{}, data interface{}) (map[string]interface{}, error)` — it performs the HTTP request itself and classifies `code != 0` into a typed error; just return the error it gives you.
+- Typed pass-through check: `if _, ok := errs.ProblemOf(err); ok { return err }` — `ProblemOf` returns `(*errs.Problem, bool)`, not a nilable pointer.
+- `.WithParam` exists only on `*errs.ValidationError`. `InternalError` / `NetworkError` have no param field — file or endpoint context goes in the message or `.WithHint(...)`.
+
+`forbidigo` + `lint/errscontract` reject the legacy `output.Err*` helpers, bare final `fmt.Errorf` / `errors.New`, and legacy envelope literals on migrated paths. Beyond what lint catches, three authoring conventions apply:
+
+- Preserve the underlying error with `.WithCause(err)` so `errors.Is` / `errors.Unwrap` keep working.
+- `param` names only the user input that actually failed. Recovery guidance goes in `.WithHint(...)`; machine-readable recovery fields (`missing_scopes`, `log_id`) carry server/system ground truth only — never caller-side guesses.
+- Error-path tests assert typed metadata via `errs.ProblemOf` (`category` / `subtype` / `param`) and cause preservation, not message substrings alone.
 
 ### stdout is data, stderr is everything else
 
@@ -76,3 +118,26 @@ CLI arguments are untrusted (they come from AI agents). Call `validate.SafeInput
 - Every behavior change needs a test alongside the change.
 - `cmdutil.TestFactory(t, config)` for test factories.
 - `t.Setenv("LARKSUITE_CLI_CONFIG_DIR", t.TempDir())` to isolate config state.
+
+### E2E Testing
+
+**Dry-run E2E (required for every shortcut change)**
+- Validates request structure without calling real APIs
+- Place in `tests/cli_e2e/dryrun/` or the corresponding domain directory
+- Set env vars `LARKSUITE_CLI_APP_ID`/`APP_SECRET`/`BRAND`, use `--dry-run`, assert method/URL/params
+- No secrets needed — runs on fork PRs
+- Explore correct params with `lark-cli <domain> --help` and `lark-cli schema` first
+
+**Live E2E (required for new flows or behavior changes)**
+- Validates real API round-trips
+- Place in `tests/cli_e2e/<domain>/`
+- Must be self-contained: create -> use -> cleanup
+- Needs bot credentials (CI secrets, skipped on fork PRs)
+- Reference: `tests/cli_e2e/task/task_status_workflow_test.go`
+
+| Change | Dry-run E2E | Live E2E |
+|--------|:-----------:|:--------:|
+| New shortcut | Required | Required |
+| Modify shortcut flags/params | Required | If behavior changes |
+| Shortcut bug fix | Required | If regression risk |
+| Internal refactor (no shortcut impact) | Not needed | Not needed |

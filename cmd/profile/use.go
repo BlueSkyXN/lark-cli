@@ -27,13 +27,14 @@ func NewCmdProfileUse(f *cmdutil.Factory) *cobra.Command {
 	cmdutil.SetTips(cmd, []string{
 		"AI agents: Do NOT switch profiles unless the user explicitly asks.",
 	})
+	cmdutil.SetRisk(cmd, "write")
 	return cmd
 }
 
 func profileUseRun(f *cmdutil.Factory, name string) error {
-	multi, err := core.LoadMultiAppConfig()
+	multi, err := core.LoadOrNotConfigured()
 	if err != nil {
-		return output.ErrWithHint(output.ExitValidation, "config", "not configured", "run: lark-cli config init")
+		return err
 	}
 
 	// Handle "-" for toggle-back

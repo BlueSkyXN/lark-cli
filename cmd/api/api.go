@@ -57,6 +57,10 @@ func normalisePath(raw string) string {
 
 // NewCmdApi creates the api command. If runF is non-nil it is called instead of apiRun (test hook).
 func NewCmdApi(f *cmdutil.Factory, runF func(*APIOptions) error) *cobra.Command {
+	return NewCmdApiWithContext(context.Background(), f, runF)
+}
+
+func NewCmdApiWithContext(ctx context.Context, f *cmdutil.Factory, runF func(*APIOptions) error) *cobra.Command {
 	opts := &APIOptions{Factory: f}
 	var asStr string
 
@@ -77,15 +81,16 @@ func NewCmdApi(f *cmdutil.Factory, runF func(*APIOptions) error) *cobra.Command 
 		},
 	}
 
-	cmd.Flags().StringVar(&opts.Params, "params", "", "query parameters JSON (supports - for stdin)")
-	cmd.Flags().StringVar(&opts.Data, "data", "", "request body JSON (supports - for stdin)")
-	cmd.Flags().StringVar(&asStr, "as", "auto", "identity type: user | bot | auto (default)")
+	cmd.Flags().StringVar(&opts.Params, "params", "", "query parameters JSON (supports - for stdin, @file for file input)")
+	cmd.Flags().StringVar(&opts.Data, "data", "", "request body JSON (supports - for stdin, @file for file input)")
+	cmdutil.AddAPIIdentityFlag(ctx, cmd, f, &asStr)
 	cmd.Flags().StringVarP(&opts.Output, "output", "o", "", "output file path for binary responses")
 	cmd.Flags().BoolVar(&opts.PageAll, "page-all", false, "automatically paginate through all pages")
 	cmd.Flags().IntVar(&opts.PageSize, "page-size", 0, "page size (0 = use API default)")
 	cmd.Flags().IntVar(&opts.PageLimit, "page-limit", 10, "max pages to fetch with --page-all (0 = unlimited)")
 	cmd.Flags().IntVar(&opts.PageDelay, "page-delay", 200, "delay in ms between pages")
 	cmd.Flags().StringVar(&opts.Format, "format", "json", "output format: json|ndjson|table|csv")
+	cmd.Flags().Bool("json", false, "shorthand for --format json")
 	cmd.Flags().StringVarP(&opts.JqExpr, "jq", "q", "", "jq expression to filter JSON output")
 	cmd.Flags().BoolVar(&opts.DryRun, "dry-run", false, "print request without executing")
 	cmd.Flags().StringVar(&opts.File, "file", "", "file to upload as multipart/form-data ([field=]path, supports - for stdin)")
@@ -96,12 +101,10 @@ func NewCmdApi(f *cmdutil.Factory, runF func(*APIOptions) error) *cobra.Command 
 		}
 		return nil, cobra.ShellCompDirectiveNoFileComp
 	}
-	_ = cmd.RegisterFlagCompletionFunc("as", func(_ *cobra.Command, _ []string, _ string) ([]string, cobra.ShellCompDirective) {
-		return []string{"user", "bot"}, cobra.ShellCompDirectiveNoFileComp
-	})
-	_ = cmd.RegisterFlagCompletionFunc("format", func(_ *cobra.Command, _ []string, _ string) ([]string, cobra.ShellCompDirective) {
+	cmdutil.RegisterFlagCompletion(cmd, "format", func(_ *cobra.Command, _ []string, _ string) ([]string, cobra.ShellCompDirective) {
 		return []string{"json", "ndjson", "table", "csv"}, cobra.ShellCompDirectiveNoFileComp
 	})
+	cmdutil.SetRisk(cmd, "write")
 
 	return cmd
 }
@@ -111,6 +114,7 @@ func NewCmdApi(f *cmdutil.Factory, runF func(*APIOptions) error) *cobra.Command 
 // FileUploadMeta is returned instead so the caller can render dry-run output.
 func buildAPIRequest(opts *APIOptions) (client.RawApiRequest, *cmdutil.FileUploadMeta, error) {
 	stdin := opts.Factory.IOStreams.In
+	fileIO := opts.Factory.ResolveFileIO(opts.Ctx)
 
 	// Validate --file mutual exclusions first.
 	if err := cmdutil.ValidateFileFlag(opts.File, opts.Params, opts.Data, opts.Output, opts.PageAll, opts.Method); err != nil {
@@ -122,7 +126,7 @@ func buildAPIRequest(opts *APIOptions) (client.RawApiRequest, *cmdutil.FileUploa
 		return client.RawApiRequest{}, nil, output.ErrValidation("--params and --data cannot both read from stdin (-)")
 	}
 
-	params, err := cmdutil.ParseJSONMap(opts.Params, "--params", stdin)
+	params, err := cmdutil.ParseJSONMap(opts.Params, "--params", stdin, fileIO)
 	if err != nil {
 		return client.RawApiRequest{}, nil, err
 	}
@@ -144,7 +148,7 @@ func buildAPIRequest(opts *APIOptions) (client.RawApiRequest, *cmdutil.FileUploa
 		// Parse --data as JSON map for form fields (not as body).
 		var dataFields any
 		if opts.Data != "" {
-			dataFields, err = cmdutil.ParseOptionalBody(opts.Method, opts.Data, stdin)
+			dataFields, err = cmdutil.ParseOptionalBody(opts.Method, opts.Data, stdin, fileIO)
 			if err != nil {
 				return client.RawApiRequest{}, nil, err
 			}
@@ -160,7 +164,7 @@ func buildAPIRequest(opts *APIOptions) (client.RawApiRequest, *cmdutil.FileUploa
 		}
 
 		fd, err := cmdutil.BuildFormdata(
-			opts.Factory.ResolveFileIO(opts.Ctx),
+			fileIO,
 			fieldName, filePath, isStdin, stdin, dataFields,
 		)
 		if err != nil {
@@ -170,7 +174,7 @@ func buildAPIRequest(opts *APIOptions) (client.RawApiRequest, *cmdutil.FileUploa
 		request.ExtraOpts = append(request.ExtraOpts, larkcore.WithFileUpload())
 	} else {
 		// Normal path: JSON body.
-		data, err := cmdutil.ParseOptionalBody(opts.Method, opts.Data, stdin)
+		data, err := cmdutil.ParseOptionalBody(opts.Method, opts.Data, stdin, fileIO)
 		if err != nil {
 			return client.RawApiRequest{}, nil, err
 		}
@@ -235,18 +239,29 @@ func apiRun(opts *APIOptions) error {
 
 	resp, err := ac.DoAPI(opts.Ctx, request)
 	if err != nil {
-		return output.MarkRaw(client.WrapDoAPIError(err))
+		// MarkRaw tells the dispatcher to skip the legacy enrichPermissionError
+		// pass on *output.ExitError values. Typed *errs.* errors that flow
+		// through here keep their canonical message / hint from BuildAPIError;
+		// MarkRaw is a no-op on those (it only flips a flag on *ExitError).
+		return output.MarkRaw(err)
 	}
 	err = client.HandleResponse(resp, client.ResponseOptions{
-		OutputPath: opts.Output,
-		Format:     format,
-		JqExpr:     opts.JqExpr,
-		Out:        out,
-		ErrOut:     f.IOStreams.ErrOut,
-		FileIO:     f.ResolveFileIO(opts.Ctx),
+		OutputPath:  opts.Output,
+		Format:      format,
+		JqExpr:      opts.JqExpr,
+		Out:         out,
+		ErrOut:      f.IOStreams.ErrOut,
+		FileIO:      f.ResolveFileIO(opts.Ctx),
+		CommandPath: opts.Cmd.CommandPath(),
+		Identity:    opts.As,
+		// CheckResponse routes through errclass.BuildAPIError for known Lark
+		// codes (typed PermissionError / AuthenticationError / ...). For
+		// unknown codes it falls back to *errs.APIError. The Brand+AppID on
+		// the client populate identity-aware fields (ConsoleURL etc.).
+		CheckError: ac.CheckResponse,
 	})
-	// MarkRaw tells root error handler to skip enrichPermissionError,
-	// preserving the original API error detail (log_id, troubleshooter, etc.).
+	// MarkRaw: see comment above on the DoAPI path. Skips legacy
+	// *ExitError enrichment; typed errors flow through unchanged.
 	if err != nil {
 		return output.MarkRaw(err)
 	}
@@ -258,9 +273,12 @@ func apiDryRun(f *cmdutil.Factory, request client.RawApiRequest, config *core.Cl
 }
 
 func apiPaginate(ctx context.Context, ac *client.APIClient, request client.RawApiRequest, format output.Format, jqExpr string, out, errOut io.Writer, pagOpts client.PaginationOptions) error {
+	if pagOpts.Identity == "" {
+		pagOpts.Identity = request.As
+	}
 	// When jq is set, always aggregate all pages then filter.
 	if jqExpr != "" {
-		if err := client.PaginateWithJq(ctx, ac, request, jqExpr, out, pagOpts, client.CheckLarkResponse); err != nil {
+		if err := client.PaginateWithJq(ctx, ac, request, jqExpr, out, pagOpts, ac.CheckResponse); err != nil {
 			return output.MarkRaw(err)
 		}
 		return nil
@@ -273,9 +291,9 @@ func apiPaginate(ctx context.Context, ac *client.APIClient, request client.RawAp
 			pf.FormatPage(items)
 		}, pagOpts)
 		if err != nil {
-			return output.MarkRaw(output.ErrNetwork("API call failed: %v", err))
+			return output.MarkRaw(err)
 		}
-		if apiErr := client.CheckLarkResponse(result); apiErr != nil {
+		if apiErr := ac.CheckResponse(result, pagOpts.Identity); apiErr != nil {
 			output.FormatValue(out, result, output.FormatJSON)
 			return output.MarkRaw(apiErr)
 		}
@@ -287,9 +305,9 @@ func apiPaginate(ctx context.Context, ac *client.APIClient, request client.RawAp
 	default:
 		result, err := ac.PaginateAll(ctx, request, pagOpts)
 		if err != nil {
-			return output.MarkRaw(output.ErrNetwork("API call failed: %v", err))
+			return output.MarkRaw(err)
 		}
-		if apiErr := client.CheckLarkResponse(result); apiErr != nil {
+		if apiErr := ac.CheckResponse(result, pagOpts.Identity); apiErr != nil {
 			output.FormatValue(out, result, output.FormatJSON)
 			return output.MarkRaw(apiErr)
 		}

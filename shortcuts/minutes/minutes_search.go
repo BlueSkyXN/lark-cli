@@ -13,6 +13,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/larksuite/cli/errs"
 	"github.com/larksuite/cli/internal/output"
 	"github.com/larksuite/cli/shortcuts/common"
 )
@@ -35,28 +36,28 @@ func parseTimeRange(runtime *common.RuntimeContext) (string, string, error) {
 	if start != "" {
 		parsed, err := toRFC3339(start)
 		if err != nil {
-			return "", "", output.ErrValidation("--start: %v", err)
+			return "", "", errs.NewValidationError(errs.SubtypeInvalidArgument, "--start: %v", err).WithParam("--start")
 		}
 		startTime = parsed
 	}
 	if end != "" {
 		parsed, err := toRFC3339(end, "end")
 		if err != nil {
-			return "", "", output.ErrValidation("--end: %v", err)
+			return "", "", errs.NewValidationError(errs.SubtypeInvalidArgument, "--end: %v", err).WithParam("--end")
 		}
 		endTime = parsed
 	}
 	if startTime != "" && endTime != "" {
 		st, err := time.Parse(time.RFC3339, startTime)
 		if err != nil {
-			return "", "", fmt.Errorf("parse normalized --start: %w", err)
+			return "", "", errs.NewInternalError(errs.SubtypeUnknown, "parse normalized --start: %v", err).WithCause(err)
 		}
 		et, err := time.Parse(time.RFC3339, endTime)
 		if err != nil {
-			return "", "", fmt.Errorf("parse normalized --end: %w", err)
+			return "", "", errs.NewInternalError(errs.SubtypeUnknown, "parse normalized --end: %v", err).WithCause(err)
 		}
 		if st.After(et) {
-			return "", "", output.ErrValidation("--start (%s) is after --end (%s)", start, end)
+			return "", "", errs.NewValidationError(errs.SubtypeInvalidArgument, "--start (%s) is after --end (%s)", start, end).WithParam("--start")
 		}
 	}
 	return startTime, endTime, nil
@@ -70,33 +71,9 @@ func toRFC3339(input string, hint ...string) (string, error) {
 	}
 	sec, err := strconv.ParseInt(ts, 10, 64)
 	if err != nil {
-		return "", fmt.Errorf("invalid timestamp %q: %w", ts, err)
+		return "", fmt.Errorf("invalid timestamp %q: %w", ts, err) //nolint:forbidigo // intermediate parse error; callers wrap it into a typed ValidationError
 	}
 	return time.Unix(sec, 0).Format(time.RFC3339), nil
-}
-
-// resolveUserIDs expands special user identifiers and removes duplicates.
-func resolveUserIDs(flagName string, ids []string, runtime *common.RuntimeContext) ([]string, error) {
-	if len(ids) == 0 {
-		return nil, nil
-	}
-	currentUserID := runtime.UserOpenId()
-	seen := make(map[string]struct{}, len(ids))
-	out := make([]string, 0, len(ids))
-	for _, id := range ids {
-		if strings.EqualFold(id, "me") {
-			if currentUserID == "" {
-				return nil, output.ErrValidation("%s: \"me\" requires a logged-in user with a resolvable open_id", flagName)
-			}
-			id = currentUserID
-		}
-		if _, ok := seen[id]; ok {
-			continue
-		}
-		seen[id] = struct{}{}
-		out = append(out, id)
-	}
-	return out, nil
 }
 
 // buildTimeFilter builds the create_time filter block for the API request.
@@ -118,7 +95,7 @@ func buildTimeFilter(startTime, endTime string) map[string]interface{} {
 func buildMinutesSearchFilter(runtime *common.RuntimeContext, startTime, endTime string) (map[string]interface{}, error) {
 	filter := map[string]interface{}{}
 
-	ownerIDs, err := resolveUserIDs("--owner-ids", common.SplitCSV(runtime.Str("owner-ids")), runtime)
+	ownerIDs, err := common.ResolveOpenIDsTyped("--owner-ids", common.SplitCSV(runtime.Str("owner-ids")), runtime)
 	if err != nil {
 		return nil, err
 	}
@@ -126,7 +103,7 @@ func buildMinutesSearchFilter(runtime *common.RuntimeContext, startTime, endTime
 		filter["owner_ids"] = ownerIDs
 	}
 
-	participantIDs, err := resolveUserIDs("--participant-ids", common.SplitCSV(runtime.Str("participant-ids")), runtime)
+	participantIDs, err := common.ResolveOpenIDsTyped("--participant-ids", common.SplitCSV(runtime.Str("participant-ids")), runtime)
 	if err != nil {
 		return nil, err
 	}
@@ -255,26 +232,26 @@ var MinutesSearch = common.Shortcut{
 			return err
 		}
 		if q := strings.TrimSpace(runtime.Str("query")); q != "" && utf8.RuneCountInString(q) > maxMinutesSearchQueryLen {
-			return output.ErrValidation("--query: length must be between 1 and 50 characters")
+			return errs.NewValidationError(errs.SubtypeInvalidArgument, "--query: length must be between 1 and 50 characters").WithParam("--query")
 		}
-		if _, err := common.ValidatePageSize(runtime, "page-size", defaultMinutesSearchPageSize, 1, maxMinutesSearchPageSize); err != nil {
+		if _, err := common.ValidatePageSizeTyped(runtime, "page-size", defaultMinutesSearchPageSize, 1, maxMinutesSearchPageSize); err != nil {
 			return err
 		}
-		ownerIDs, err := resolveUserIDs("--owner-ids", common.SplitCSV(runtime.Str("owner-ids")), runtime)
+		ownerIDs, err := common.ResolveOpenIDsTyped("--owner-ids", common.SplitCSV(runtime.Str("owner-ids")), runtime)
 		if err != nil {
 			return err
 		}
 		for _, id := range ownerIDs {
-			if _, err := common.ValidateUserID(id); err != nil {
+			if _, err := common.ValidateUserIDTyped("--owner-ids", id); err != nil {
 				return err
 			}
 		}
-		participantIDs, err := resolveUserIDs("--participant-ids", common.SplitCSV(runtime.Str("participant-ids")), runtime)
+		participantIDs, err := common.ResolveOpenIDsTyped("--participant-ids", common.SplitCSV(runtime.Str("participant-ids")), runtime)
 		if err != nil {
 			return err
 		}
 		for _, id := range participantIDs {
-			if _, err := common.ValidateUserID(id); err != nil {
+			if _, err := common.ValidateUserIDTyped("--participant-ids", id); err != nil {
 				return err
 			}
 		}
@@ -283,7 +260,7 @@ var MinutesSearch = common.Shortcut{
 				return nil
 			}
 		}
-		return common.FlagErrorf("specify at least one of --query, --owner-ids, --participant-ids, --start, or --end")
+		return errs.NewValidationError(errs.SubtypeInvalidArgument, "specify at least one of --query, --owner-ids, --participant-ids, --start, or --end")
 	},
 	DryRun: func(ctx context.Context, runtime *common.RuntimeContext) *common.DryRunAPI {
 		startTime, endTime, err := parseTimeRange(runtime)
@@ -312,7 +289,7 @@ var MinutesSearch = common.Shortcut{
 			return err
 		}
 
-		data, err := runtime.CallAPI(http.MethodPost, "/open-apis/minutes/v1/minutes/search", buildMinutesSearchParams(runtime), body)
+		data, err := runtime.CallAPITyped(http.MethodPost, "/open-apis/minutes/v1/minutes/search", buildMinutesSearchParams(runtime), body)
 		if err != nil {
 			return err
 		}

@@ -24,6 +24,7 @@ func NewCmdProfileRename(f *cmdutil.Factory) *cobra.Command {
 			return profileRenameRun(f, args[0], args[1])
 		},
 	}
+	cmdutil.SetRisk(cmd, "write")
 	return cmd
 }
 
@@ -32,9 +33,9 @@ func profileRenameRun(f *cmdutil.Factory, oldName, newName string) error {
 		return output.ErrValidation("%v", err)
 	}
 
-	multi, err := core.LoadMultiAppConfig()
+	multi, err := core.LoadOrNotConfigured()
 	if err != nil {
-		return output.ErrWithHint(output.ExitValidation, "config", "not configured", "run: lark-cli config init")
+		return err
 	}
 
 	idx := multi.FindAppIndex(oldName)
