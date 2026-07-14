@@ -18,21 +18,26 @@ metadata:
 
 Shortcut 是对常用操作的高级封装（`lark-cli okr +<verb> [flags]`）。有 Shortcut 的操作优先使用。
 
-| Shortcut                                                     | 说明                       |
-|--------------------------------------------------------------|--------------------------|
-| [`+cycle-list`](references/lark-okr-cycle-list.md)           | 获取特定用户的 OKR 周期列表，可以按时间筛选 |
-| [`+cycle-detail`](references/lark-okr-cycle-detail.md)       | 获取特定 OKR 中所有目标和关键结果的内容   |
-| [`+progress-list`](references/lark-okr-progress-list.md)     | 获取目标或关键结果的所有进展记录列表       |
-| [`+progress-get`](references/lark-okr-progress-get.md)       | 根据 ID 获取单条 OKR 进展记录      |
-| [`+progress-create`](references/lark-okr-progress-create.md) | 为目标或关键结果创建进展记录           |
-| [`+progress-update`](references/lark-okr-progress-update.md) | 更新指定 ID 的进展记录内容          |
-| [`+progress-delete`](references/lark-okr-progress-delete.md) | 删除指定 ID 的进展记录（不可恢复）      |
-| [`+upload-image`](references/lark-okr-image-upload.md)       | 上传图片用于 OKR 进展记录的富文本内容    |
+| Shortcut                                                       | 说明                       |
+|----------------------------------------------------------------|--------------------------|
+| [`+cycle-list`](references/lark-okr-cycle-list.md)             | 获取特定用户的 OKR 周期列表，可以按时间筛选 |
+| [`+cycle-detail`](references/lark-okr-cycle-detail.md)         | 获取特定 OKR 中所有目标和关键结果的内容   |
+| [`+progress-list`](references/lark-okr-progress-list.md)       | 获取目标或关键结果的所有进展记录列表       |
+| [`+progress-get`](references/lark-okr-progress-get.md)         | 根据 ID 获取单条 OKR 进展记录      |
+| [`+progress-create`](references/lark-okr-progress-create.md)   | 为目标或关键结果创建进展记录           |
+| [`+progress-update`](references/lark-okr-progress-update.md)   | 更新指定 ID 的进展记录内容          |
+| [`+progress-delete`](references/lark-okr-progress-delete.md)   | 删除指定 ID 的进展记录（不可恢复）      |
+| [`+upload-image`](references/lark-okr-image-upload.md)         | 上传图片用于 OKR 进展记录的富文本内容    |
+| [`+batch-create`](references/lark-okr-batch-create.md)         | 批量创建 Objective 和 KR      |
+| [`+reorder`](references/lark-okr-reorder.md)                   | 调整 Objective 或 KR 的顺位    |
+| [`+weight`](references/lark-okr-weight.md)                     | 调整 Objective 或 KR 的权重    |
+| [`+indicator-update`](references/lark-okr-indicator-update.md) | 更新 Objective 或 KR 的指标当前值（简单场景推荐）。更复杂的指标操作见 [量化指标管理](references/lark-okr-indicators.md) |
+| [`+patch`](references/lark-okr-patch.md)                       | 部分更新 Objective 或 KR（content、notes、score、deadline） |
 
 ## 格式说明
 
 - [`OKR 业务实体`](references/lark-okr-entities.md) 获取 OKR 实体结构，定义和关系，帮助你更好的使用 OKR 功能
-- [`ContentBlock 富文本格式`](references/lark-okr-contentblock.md) — Objective/KeyResult/Progress 中 Content/Note 字段使用的富文本格式说明
+- [`ContentBlock 富文本格式`](references/lark-okr-contentblock.md) — Objective/KeyResult/Progress 中 Content/Note 字段使用的富文本格式说明，以及简化的半纯文本（SemiPlainContent）格式的进一步说明。
 - **强烈建议** 在操作 OKR 前，阅读[`OKR 业务实体`](references/lark-okr-entities.md)以了解基础概念
 
 ## API Resources
@@ -41,6 +46,8 @@ Shortcut 是对常用操作的高级封装（`lark-cli okr +<verb> [flags]`）�
 
 - `delete` — 删除对齐关系
 - `get` — 获取对齐关系
+
+> **操作指南：** [OKR 对齐关系管理](references/lark-okr-alignments.md) 包含 list/create/delete 完整工作流
 
 ### categories
 
@@ -67,6 +74,8 @@ Shortcut 是对常用操作的高级封装（`lark-cli okr +<verb> [flags]`）�
 
 - `patch` — 更新量化指标
 
+> **操作指南：** [OKR 量化指标管理](references/lark-okr-indicators.md) 包含目标/KR 指标查询和 patch 更新完整工作流
+
 ### key_results
 
 - `delete` — 删除关键结果
@@ -76,6 +85,8 @@ Shortcut 是对常用操作的高级封装（`lark-cli okr +<verb> [flags]`）�
 ### key_result.indicators
 
 - `list` — 获取关键结果的量化指标
+
+> **操作指南：** [OKR 量化指标管理](references/lark-okr-indicators.md)
 
 ### objectives
 
