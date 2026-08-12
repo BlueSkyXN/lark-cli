@@ -25,13 +25,11 @@ func TestDryRunTableOps(t *testing.T) {
 	listRT := newBaseTestRuntime(map[string]string{"base-token": "app_x"}, nil, map[string]int{"offset": -1, "limit": 100})
 	assertDryRunContains(t, dryRunTableList(ctx, listRT), "GET /open-apis/base/v3/bases/app_x/tables", "offset=0", "limit=100")
 
-	pageSizeAliasRT := newBaseTestRuntime(map[string]string{"base-token": "app_x"}, nil, map[string]int{"page-size": 40})
-	assertDryRunContains(t, dryRunTableList(ctx, pageSizeAliasRT), "limit=40")
-
 	rt := newBaseTestRuntime(map[string]string{"base-token": "app_x", "table-id": "tbl_1", "name": "Orders"}, nil, nil)
 	assertDryRunContains(t, dryRunTableGet(ctx, rt), "GET /open-apis/base/v3/bases/app_x/tables/tbl_1")
-	assertDryRunContains(t, dryRunTableCreate(ctx, rt), "POST /open-apis/base/v3/bases/app_x/tables")
 
+	// +table-create requires --fields, so the fieldless shape is unreachable
+	// through the command surface; see table_create_test.go for that contract.
 	tableCreateWithFieldsRT := newBaseTestRuntime(
 		map[string]string{"base-token": "app_x", "name": "Orders", "fields": `[{"name":"Title","type":"text"}]`},
 		nil,
@@ -218,18 +216,6 @@ func TestDryRunRecordOps(t *testing.T) {
 		`"filter":{"conditions":[["Status","!=","Done"]],"logic":"and"}`,
 		`"sort":[{"desc":true,"field":"Updated At"}]`,
 	)
-
-	searchPageSizeAliasRT := newBaseTestRuntimeWithArrays(
-		map[string]string{
-			"base-token": "app_x",
-			"table-id":   "tbl_1",
-			"keyword":    "Alice",
-		},
-		map[string][]string{"search-field": {"Name"}},
-		nil,
-		map[string]int{"page-size": 25},
-	)
-	assertDryRunContains(t, dryRunRecordSearch(ctx, searchPageSizeAliasRT), `"limit":25`)
 
 	upsertCreateRT := newBaseTestRuntime(
 		map[string]string{"base-token": "app_x", "table-id": "tbl_1", "json": `{"Name":"A"}`},

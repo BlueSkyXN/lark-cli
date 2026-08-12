@@ -285,7 +285,7 @@ var MinutesDetail = common.Shortcut{
 	Description: "Query minute details with selective artifact flags (summary, todo, chapter, transcript, keyword)",
 	Risk:        "read",
 	Scopes:      []string{"minutes:minutes.basic:read", "minutes:minutes.artifacts:read"},
-	AuthTypes:   []string{"user"},
+	AuthTypes:   []string{"user", "bot"},
 	HasFormat:   true,
 	Flags: []common.Flag{
 		{Name: "minute-tokens", Desc: "minute tokens, comma-separated for batch", Required: true},
@@ -322,7 +322,6 @@ var MinutesDetail = common.Shortcut{
 			if missing := auth.MissingScopes(result.Scopes, scopesDetailMinuteTokens); len(missing) > 0 {
 				return errs.NewPermissionError(errs.SubtypeMissingScope,
 					"missing required scope(s): %s", strings.Join(missing, ", ")).
-					WithHint("run `lark-cli auth login --scope %q` in the background. It blocks and outputs a verification URL — retrieve the URL and open it in a browser to complete login.", strings.Join(missing, " ")).
 					WithMissingScopes(missing...).
 					WithIdentity(string(runtime.As()))
 			}

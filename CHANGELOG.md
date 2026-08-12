@@ -2,6 +2,207 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v1.0.86] - 2026-08-11
+
+### Features
+
+- **drive**: add wiki url/token support to +download and +preview (#2220)
+- report upload file events (#2093)
+- **slides**: normalize replace-slide part aliases (#2225)
+- **drive**: add +member-remove shortcut (#1994)
+- support shared vc live references and document context (#2249)
+- **wiki**: improve node creation and terminal errors (#2266)
+- **base**: require --fields on +table-create (#2221)
+- support bot identity (#2288)
+- **affordance**: support domain skill lists (#2291)
+- expose compact task fields (#2109)
+- **drive**: document copy workflow guidance (#2184)
+- add apps database sync shortcuts for Base-to-database import (#2251)
+- **apps**: add +user-id-convert shortcut for Miaoda↔Feishu ID conversion (#2270)
+- **slides**: inline slides reference docs into help output (#2181)
+
+### Bug Fixes
+
+- **wiki**: correct copy semantics and rename routing (#2238)
+- **slides**: move add-slide and delete-slide reference docs to cli/ directory (#2272)
+- **drive**: harden export and push failure recovery (#2279)
+- **wiki**: clarify resource permission recovery (#2281)
+
+### Documentation
+
+- improve agent contribution guidance (#2259)
+- document supported image formats in lark-slides media-upload (#2269)
+- **calendar**: clarify identity selection for scheduling (#2280)
+- **slides**: use built-in --jq in cli examples and fix workflow link labels (#2286)
+
+### Refactoring
+
+- reorganize lark slides skill references (#2207)
+
+### Misc
+
+- prune unsupported iconpark index entries (#2252)
+- verify release Go toolchain (#2256)
+
+## [v1.0.85] - 2026-08-07
+
+### Features
+
+- **event**: compile the catalog and harden the consume pipeline (#2142)
+- support bot identity for search shortcuts (#2194)
+- **drive**: add +update-title shortcut (#2172)
+- **sheets**: add ai formula verify (#1959)
+- **drive**: add +copy shortcut (#2129)
+- add frontend as third app type for apps domain (#2072)
+- **sheets**: harden error prescriptions, batch updates, and read workflows
+- **slides**: accept slide XML files in +create (#2197)
+- **docs**: add local authoring and resource workflows (#1921)
+- preflight export permission for downloads (#2218)
+
+### Bug Fixes
+
+- **base**: guide complete dashboard data recovery (#2144)
+- **apps**: isolate git credential helper chain for scoped repos (#2188)
+- **im**: unpin search identity after bot support landed (#2208)
+- **auth**: harden token refresh and concurrency handling (#2135)
+- **registry**: describe the attendance and mindnotes domains (#2210)
+- reject truncated wiki node tokens (#2203)
+- **apps**: detect the no-database failure by code or message (#2217)
+- **base**: improve field creation and query guidance (#2114)
+- **slides**: restore update-slide skill guidance (#2227)
+- align slides xml-get skill flags (#2237)
+- **im**: harden resource downloads with validated ranged streams (#2223)
+
+### Documentation
+
+- **skills**: sync lark whiteboard skill (#2215)
+- **doc**: clarify history edit time format (#1962)
+
+### Misc
+
+- feat (apps): add miaoda app collaborator management (#2230)
+
+## [v1.0.84] - 2026-08-05
+
+### Features
+
+- **calendar**: allow bot auth for search-event (#2186)
+- **extension**: present restricted commands as absent and trim skills (#1837)
+- add Base table copy shortcuts (#2019)
+- **slides**: support explicit screenshot output paths (#2180)
+- profile selection from environment with source-aware errors (#2198)
+- migrate application and IM guidance to affordance (#2199)
+
+### Bug Fixes
+
+- **slides**: bind lint issues to source XML nodes (#2179)
+- **drive**: stop export polling on rate limits (#2192)
+- make agent recovery and concealment reliable (#2189)
+- surface retry metadata for TAT rate limits (#2200)
+
+### Documentation
+
+- **slides**: temporarily route skill guidance back to +replace-pages (#2187)
+- **calendar**: clarify attendee resolution to avoid type guessing (#2195)
+- **wiki**: route node resolution through shortcut (#2132)
+
+## [v1.0.83] - 2026-08-04
+
+### Features
+
+- **slides**: add +update-slide for whole-page updates (#2143)
+- **apps**: friendly error for db commands on an app with no database (#2162)
+- **slides**: support embedded SVG content (#2154)
+
+### Bug Fixes
+
+- **slides**: add agent-friendly aliases for screenshot flags (#2156)
+- **slides**: migrate SML namespace from HTTP to HTTPS (#2169)
+- **slides**: improve missing screenshot selector guidance (#2177)
+- **slides**: name the wrong --parts field instead of "non-empty replacement" (#2174)
+
+### Documentation
+
+- **base**: clarify unsupported capability boundaries (#2133)
+- **slides**: correct +xml-get flag requirements (#2171)
+
+### Misc
+
+- notarize macOS release candidates (#2073)
+- allow concurrent live e2e jobs (#2182)
+
+## [v1.0.82] - 2026-08-03
+
+### Features
+
+- **enhancement**: centralize HTTP transport policies (#2021)
+- add framework flag aliases and unified IM pagination (#2146)
+- **slides**: add +add-slide and +delete-slide shortcuts (#2120)
+
+### Bug Fixes
+
+- normalize mail triage filters (#2068)
+- **slides**: restore presentation aliases (#2164)
+
+### Documentation
+
+- remove broken Star History chart (#2141)
+- **base**: harden dashboard multi-block read guidance (#2122)
+
+### Tests
+
+- pass contact list params explicitly (#2150)
+
+## [v1.0.81] - 2026-07-31
+
+### Features
+
+- support visible_rule for form questions (#1891)
+- **contact**: add bot search shortcut (#2083)
+- add SXSD schema validation to Slides lint (#2103)
+- **drive**: add comment-operation shortcuts (#1898)
+- **drive**: extend permission shortcuts for Miaoda (#2070)
+- **apps**: add cache debug commands (+cache-get/-delete/-clear) (#1896)
+- support source file preview artifacts (#2085)
+
+### Bug Fixes
+
+- **contact**: stop bot match segments carrying tags or empty entries (#2115)
+- **base**: resolve Base URL block types accurately (#2099)
+- **drive**: use title for default download filename (#2089)
+- drop stale target version from root upgrade prompt (#2100)
+
+### Documentation
+
+- **calendar**: warn against container-default timezone in time conversion (#2104)
+- **calendar**: confirm scope before editing recurring events (#2119)
+- **base**: clarify form and file operation routing (#2110)
+
+### Misc
+
+- add protected public domain allowlists (#2111)
+
+## [v1.0.80] - 2026-07-29
+
+### Features
+
+- **drive**: add +member-list shortcut (#1795)
+- **drive**: add +permission-get-setting shortcut (#1738)
+- propagate invocation metadata (#2097)
+
+### Documentation
+
+- **slides**: 补齐 shortcut 参数说明，修正 +xml-get --output 必填标注 (#2088)
+- **slides**: +create 的参数下沉到 create.md，主 skill 只留路由 (#2096)
+
+### Tests
+
+- **e2e**: wait for base role update visibility (#2087)
+
+### Misc
+
+- Feat/detect line text overlap (#2069)
+
 ## [v1.0.79] - 2026-07-28
 
 ### Features
@@ -1701,6 +1902,13 @@ Bundled AI agent skills for intelligent assistance:
 - Bilingual documentation (English & Chinese).
 - CI/CD pipelines: linting, testing, coverage reporting, and automated releases.
 
+[v1.0.86]: https://github.com/larksuite/cli/releases/tag/v1.0.86
+[v1.0.85]: https://github.com/larksuite/cli/releases/tag/v1.0.85
+[v1.0.84]: https://github.com/larksuite/cli/releases/tag/v1.0.84
+[v1.0.83]: https://github.com/larksuite/cli/releases/tag/v1.0.83
+[v1.0.82]: https://github.com/larksuite/cli/releases/tag/v1.0.82
+[v1.0.81]: https://github.com/larksuite/cli/releases/tag/v1.0.81
+[v1.0.80]: https://github.com/larksuite/cli/releases/tag/v1.0.80
 [v1.0.79]: https://github.com/larksuite/cli/releases/tag/v1.0.79
 [v1.0.78]: https://github.com/larksuite/cli/releases/tag/v1.0.78
 [v1.0.77]: https://github.com/larksuite/cli/releases/tag/v1.0.77

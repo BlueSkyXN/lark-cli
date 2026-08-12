@@ -40,16 +40,12 @@ func (c docCoverHTTPStatusCause) Error() string {
 	return http.StatusText(int(c))
 }
 
-type docCoverURLGuardError string
-
-func (e docCoverURLGuardError) Error() string {
-	return string(e)
-}
-
 var docCoverAllowedContentTypes = map[string]string{
+	"image/bmp":  ".bmp",
 	"image/gif":  ".gif",
 	"image/jpeg": ".jpg",
 	"image/png":  ".png",
+	"image/tiff": ".tiff",
 	"image/webp": ".webp",
 }
 
@@ -542,7 +538,7 @@ func downloadDocCoverURL(ctx context.Context, runtime *common.RuntimeContext, ra
 		return nil, "", err
 	}
 
-	baseClient, err := runtime.Factory.HttpClient()
+	baseClient, err := runtime.Factory.ExternalHTTPClient()
 	if err != nil {
 		return nil, "", errs.NewInternalError(errs.SubtypeSDKError, "http client: %v", err).WithCause(err)
 	}
@@ -572,7 +568,7 @@ func downloadDocCoverURL(ctx context.Context, runtime *common.RuntimeContext, ra
 	mediaType = strings.ToLower(mediaType)
 	ext, ok := docCoverAllowedContentTypes[mediaType]
 	if !ok {
-		return nil, "", errs.NewValidationError(errs.SubtypeInvalidArgument, "cover URL Content-Type %q is not supported; expected image/png, image/jpeg, image/gif or image/webp", mediaType).WithParam("--url")
+		return nil, "", errs.NewValidationError(errs.SubtypeInvalidArgument, "cover URL Content-Type %q is not supported; expected image/bmp, image/gif, image/jpeg, image/png, image/tiff, or image/webp", mediaType).WithParam("--url")
 	}
 
 	limited := io.LimitReader(resp.Body, docCoverURLMaxBytes+1)
@@ -673,6 +669,9 @@ func isUnsafeDocCoverIP(ip net.IP) bool {
 		return true
 	}
 	if v4 := ip.To4(); v4 != nil {
+		if v4[0] == 0 {
+			return true
+		}
 		if v4[0] == 10 || v4[0] == 127 {
 			return true
 		}
@@ -701,13 +700,15 @@ func isUnsafeDocCoverIP(ip net.IP) bool {
 
 func newDocCoverHTTPClient(base *http.Client) *http.Client { //nolint:forbidigo // guarded external --url downloader cannot use Lark API runtime helpers.
 	if base == nil {
-		base = &http.Client{} //nolint:forbidigo // fallback only; caller normally supplies Factory.HttpClient.
+		base = &http.Client{} //nolint:forbidigo // fallback only; caller normally supplies Factory.ExternalHTTPClient.
 	}
 	cloned := *base
 	if cloned.Timeout == 0 { //nolint:forbidigo // external download timeout guard on cloned client.
 		cloned.Timeout = 30 * time.Second //nolint:forbidigo // external download timeout guard on cloned client.
 	}
-	cloned.Transport = cloneDocCoverTransport(base.Transport)                   //nolint:forbidigo // external download transport adds proxy/IP guards.
+	cloned.Transport = validate.NewDownloadHTTPClient(base, validate.DownloadHTTPClientOptions{ //nolint:forbidigo // guarded external download
+		MaxRedirects: 3,
+	}).Transport
 	cloned.CheckRedirect = func(req *http.Request, via []*http.Request) error { //nolint:forbidigo // redirects must be validated for external --url downloads.
 		if len(via) >= 3 {
 			return errs.NewValidationError(errs.SubtypeInvalidArgument, "cover URL redirects too many times").WithParam("--url")
@@ -722,74 +723,4 @@ func newDocCoverHTTPClient(base *http.Client) *http.Client { //nolint:forbidigo 
 		return err
 	}
 	return &cloned
-}
-
-func cloneDocCoverTransport(base http.RoundTripper) *http.Transport { //nolint:forbidigo // external --url downloader wraps caller transport with IP/proxy guards.
-	var cloned *http.Transport
-	if src, ok := base.(*http.Transport); ok && src != nil {
-		cloned = src.Clone()
-	} else if def, ok := http.DefaultTransport.(*http.Transport); ok && def != nil { //nolint:forbidigo // fallback for guarded external downloader only.
-		cloned = def.Clone()
-	} else {
-		cloned = &http.Transport{}
-	}
-	cloned.Proxy = nil
-
-	origDial := cloned.DialContext
-	cloned.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
-		conn, err := dialDocCoverConn(ctx, origDial, network, addr)
-		if err != nil {
-			return nil, err
-		}
-		if err := validateDocCoverConnRemoteIP(conn); err != nil {
-			conn.Close()
-			return nil, err
-		}
-		return conn, nil
-	}
-	if cloned.DialTLSContext != nil {
-		origDialTLS := cloned.DialTLSContext
-		cloned.DialTLSContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
-			conn, err := dialDocCoverConn(ctx, origDialTLS, network, addr)
-			if err != nil {
-				return nil, err
-			}
-			if err := validateDocCoverConnRemoteIP(conn); err != nil {
-				conn.Close()
-				return nil, err
-			}
-			return conn, nil
-		}
-	}
-	return cloned
-}
-
-func dialDocCoverConn(ctx context.Context, dialFn func(context.Context, string, string) (net.Conn, error), network, addr string) (net.Conn, error) {
-	if dialFn != nil {
-		return dialFn(ctx, network, addr)
-	}
-	var dialer net.Dialer
-	return dialer.DialContext(ctx, network, addr)
-}
-
-func validateDocCoverConnRemoteIP(conn net.Conn) error {
-	if conn == nil {
-		return docCoverURLGuardError("nil connection")
-	}
-	addr := conn.RemoteAddr()
-	if addr == nil {
-		return docCoverURLGuardError("missing remote address")
-	}
-	host, _, err := net.SplitHostPort(addr.String())
-	if err != nil {
-		host = addr.String()
-	}
-	ip := net.ParseIP(strings.Trim(host, "[]"))
-	if ip == nil {
-		return docCoverURLGuardError("invalid remote IP")
-	}
-	if isUnsafeDocCoverIP(ip) {
-		return docCoverURLGuardError("local/internal host is not allowed")
-	}
-	return nil
 }
