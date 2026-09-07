@@ -229,7 +229,7 @@ func dryRunRecordList(_ context.Context, runtime *common.RuntimeContext) *common
 	limit := runtime.Int("limit")
 	requestLimit := limit
 	if runtime.Str("format") == "ndjson" {
-		requestLimit = min(limit, maxInlineRecordReadLimit)
+		requestLimit = min(limit, ndjsonRecordPageSize)
 	}
 	params := url.Values{}
 	params.Set("offset", strconv.Itoa(offset))
@@ -291,7 +291,7 @@ func dryRunRecordSearch(_ context.Context, runtime *common.RuntimeContext) *comm
 	if runtime.Str("format") == "ndjson" && body != nil {
 		_, requestedLimit, err := recordSearchPagination(body)
 		if err == nil {
-			body["limit"] = min(requestedLimit, maxInlineRecordReadLimit)
+			body["limit"] = min(requestedLimit, ndjsonRecordPageSize)
 			dry.Set("export_format", "ndjson").Set("requested_limit", requestedLimit)
 			if outputPath := strings.TrimSpace(runtime.Str("output")); outputPath != "" {
 				dry.Set("output", outputPath)
@@ -385,16 +385,16 @@ const maxShareBatchSize = 100
 func validateRecordShareBatch(runtime *common.RuntimeContext) error {
 	recordIDs := deduplicateRecordIDs(runtime)
 	if len(recordIDs) == 0 {
-		return baseFlagErrorf("--record-ids is required and must not be empty")
+		return baseFlagErrorf("--record-id is required and must not be empty")
 	}
 	if len(recordIDs) > maxShareBatchSize {
-		return baseFlagErrorf("--record-ids exceeds maximum limit of %d (got %d)", maxShareBatchSize, len(recordIDs))
+		return baseFlagErrorf("--record-id exceeds maximum limit of %d (got %d)", maxShareBatchSize, len(recordIDs))
 	}
 	return nil
 }
 
 func deduplicateRecordIDs(runtime *common.RuntimeContext) []string {
-	raw := runtime.StrSlice("record-ids")
+	raw := runtime.StrSlice("record-id")
 	seen := make(map[string]bool, len(raw))
 	result := make([]string, 0, len(raw))
 	for _, id := range raw {
@@ -429,6 +429,7 @@ func validateRecordJSON(runtime *common.RuntimeContext) error {
 
 func recordProjectionFieldFlag(desc string) common.Flag {
 	flag := fieldRefFlag(false)
+	flag.Aliases = append(flag.Aliases, "field")
 	flag.Type = "string_array"
 	flag.Desc = desc
 	return flag

@@ -35,6 +35,12 @@ const (
 	// wikiNodeCreateRetryBaseDelay is the initial backoff delay for lock
 	// contention retries. Subsequent retries double the delay (250ms, 500ms).
 	wikiNodeCreateRetryBaseDelay = 250 * time.Millisecond
+
+	// 131003 is command-specific here. For node creation it covers multiple
+	// structural limits, so do not classify it globally or infer a particular
+	// limit from the upstream error message.
+	wikiNodeCreateStructuralLimitCode = 131003
+	wikiNodeCreateStructuralLimitHint = "Wiki node creation reached a structural limit, such as the space node count, hierarchy depth, or direct-child count. This is not a transient failure. Do not retry with the same parameters; review the upstream error message, then choose a shallower or different parent, reorganize existing nodes, or clean up or use another Wiki space as appropriate."
 )
 
 var wikiObjectTypes = []string{
@@ -82,13 +88,11 @@ var WikiNodeCreate = common.Shortcut{
 	Execute: func(ctx context.Context, runtime *common.RuntimeContext) error {
 		spec := readWikiNodeCreateSpec(runtime)
 
-		fmt.Fprintf(runtime.IO().ErrOut, "Creating wiki node...\n")
 		execution, err := runWikiNodeCreate(ctx, wikiNodeCreateAPI{runtime: runtime}, runtime.As(), spec, runtime.IO().ErrOut)
 		if err != nil {
 			return err
 		}
 
-		fmt.Fprintf(runtime.IO().ErrOut, "Created wiki node in space %s via %s.\n", execution.ResolvedSpace.SpaceID, execution.ResolvedSpace.ResolvedBy)
 		runtime.Out(augmentWikiNodeCreateOutput(runtime, execution), nil)
 		return nil
 	},
@@ -315,7 +319,7 @@ func needsMyLibraryLookup(spec wikiNodeCreateSpec) bool {
 	return spec.SpaceID == "" || spec.SpaceID == wikiMyLibrarySpaceID
 }
 
-func runWikiNodeCreate(ctx context.Context, client wikiNodeCreateClient, identity core.Identity, spec wikiNodeCreateSpec, errOut io.Writer) (*wikiNodeCreateExecution, error) {
+func runWikiNodeCreate(ctx context.Context, client wikiNodeCreateClient, identity core.Identity, spec wikiNodeCreateSpec, _ io.Writer) (*wikiNodeCreateExecution, error) {
 	resolvedSpace, err := resolveWikiNodeCreateSpace(ctx, client, identity, spec)
 	if err != nil {
 		return nil, err
@@ -328,7 +332,6 @@ func runWikiNodeCreate(ctx context.Context, client wikiNodeCreateClient, identit
 	for attempt := 0; attempt <= wikiNodeCreateMaxRetries; attempt++ {
 		if attempt > 0 {
 			delay := wikiNodeCreateRetryBaseDelay << uint(attempt-1)
-			fmt.Fprintf(errOut, "Wiki node create encountered lock contention, retrying (attempt %d/%d) in %v...\n", attempt, wikiNodeCreateMaxRetries, delay)
 			select {
 			case <-ctx.Done():
 				return nil, ctx.Err()
@@ -341,7 +344,7 @@ func runWikiNodeCreate(ctx context.Context, client wikiNodeCreateClient, identit
 			break
 		}
 		if !isWikiNodeLockContention(lastErr) {
-			return nil, lastErr
+			return nil, withWikiNodeCreateRecoveryHint(lastErr)
 		}
 	}
 	if lastErr != nil {
@@ -355,6 +358,20 @@ func runWikiNodeCreate(ctx context.Context, client wikiNodeCreateClient, identit
 		Node:          node,
 		ResolvedSpace: resolvedSpace,
 	}, nil
+}
+
+func withWikiNodeCreateRecoveryHint(err error) error {
+	p, ok := errs.ProblemOf(err)
+	if !ok || p.Code != wikiNodeCreateStructuralLimitCode {
+		return err
+	}
+	p.Retryable = false
+	if existing := strings.TrimSpace(p.Hint); existing != "" {
+		p.Hint = existing + "\n" + wikiNodeCreateStructuralLimitHint
+	} else {
+		p.Hint = wikiNodeCreateStructuralLimitHint
+	}
+	return err
 }
 
 // isWikiNodeLockContention returns true if the error is a Lark API error with

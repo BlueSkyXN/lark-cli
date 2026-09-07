@@ -627,8 +627,12 @@ func TestWikiNodeCreateMountedExecuteWithExplicitSpaceID(t *testing.T) {
 	if captured["title"] != "Wiki Node" {
 		t.Fatalf("captured title = %#v, want %q", captured["title"], "Wiki Node")
 	}
-	if got := stderr.String(); !strings.Contains(got, "Created wiki node in space space_123 via explicit_space_id.") {
-		t.Fatalf("stderr = %q, want completed creation message", got)
+	gotStderr := stderr.String()
+	if strings.Contains(gotStderr, "Creating wiki node") || strings.Contains(gotStderr, "Created wiki node") {
+		t.Fatalf("stderr = %q, want no creation progress", gotStderr)
+	}
+	if !strings.Contains(gotStderr, "auto-grant was skipped") {
+		t.Fatalf("stderr = %q, want actionable auto-grant warning", gotStderr)
 	}
 }
 
@@ -934,14 +938,8 @@ func TestRunWikiNodeCreateRetriesOnLockContention(t *testing.T) {
 	if execution.Node.NodeToken != "wik_created" {
 		t.Fatalf("node token = %q, want %q", execution.Node.NodeToken, "wik_created")
 	}
-	if !strings.Contains(stderr.String(), "lock contention") {
-		t.Fatalf("stderr = %q, want lock contention log", stderr.String())
-	}
-	if !strings.Contains(stderr.String(), "retrying (attempt 1/") {
-		t.Fatalf("stderr = %q, want attempt 1 log", stderr.String())
-	}
-	if !strings.Contains(stderr.String(), "retrying (attempt 2/") {
-		t.Fatalf("stderr = %q, want attempt 2 log", stderr.String())
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr = %q, want no retry progress", stderr.String())
 	}
 }
 
@@ -1020,6 +1018,54 @@ func TestRunWikiNodeCreateNoRetryOnNonContentionError(t *testing.T) {
 	}
 }
 
+func TestRunWikiNodeCreateClassifiesStructuralLimitAsNonRetryable(t *testing.T) {
+	t.Parallel()
+
+	cause := errors.New("opaque upstream cause")
+	const upstreamHint = "upstream recovery hint"
+	limitErr := errs.NewAPIError(errs.SubtypeUnknown, "opaque upstream message").
+		WithCode(wikiNodeCreateStructuralLimitCode).
+		WithRetryable().
+		WithHint(upstreamHint).
+		WithCause(cause)
+	client := &fakeWikiNodeCreateClient{
+		spaces: map[string]*wikiSpaceRecord{
+			wikiMyLibrarySpaceID: {SpaceID: "space_my_library"},
+		},
+		createErrs: []error{limitErr},
+	}
+
+	var stderr bytes.Buffer
+	_, err := runWikiNodeCreate(context.Background(), client, core.AsUser, wikiNodeCreateSpec{
+		NodeType: wikiNodeTypeOrigin,
+		ObjType:  "docx",
+		Title:    "Roadmap",
+	}, &stderr)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if len(client.createInvoked) != 1 {
+		t.Fatalf("create invoked %d times, want 1", len(client.createInvoked))
+	}
+	if strings.Contains(stderr.String(), "retrying") {
+		t.Fatalf("stderr = %q, should not contain retry log", stderr.String())
+	}
+	problem, ok := errs.ProblemOf(err)
+	if !ok {
+		t.Fatalf("error = %T, want typed problem", err)
+	}
+	if problem.Category != errs.CategoryAPI || problem.Code != wikiNodeCreateStructuralLimitCode || problem.Retryable {
+		t.Fatalf("problem = %#v, want API code %d and retryable=false", problem, wikiNodeCreateStructuralLimitCode)
+	}
+	wantHint := upstreamHint + "\n" + wikiNodeCreateStructuralLimitHint
+	if problem.Hint != wantHint {
+		t.Fatalf("hint = %q, want %q", problem.Hint, wantHint)
+	}
+	if !errors.Is(err, cause) {
+		t.Fatalf("error does not preserve cause %v: %v", cause, err)
+	}
+}
+
 func TestRunWikiNodeCreateRetriesOnFirstLockThenSucceeds(t *testing.T) {
 	t.Parallel()
 
@@ -1055,11 +1101,8 @@ func TestRunWikiNodeCreateRetriesOnFirstLockThenSucceeds(t *testing.T) {
 	if execution.Node.NodeToken != "wik_created" {
 		t.Fatalf("node token = %q, want %q", execution.Node.NodeToken, "wik_created")
 	}
-	if !strings.Contains(stderr.String(), "retrying (attempt 1/") {
-		t.Fatalf("stderr = %q, want attempt 1 log", stderr.String())
-	}
-	if strings.Contains(stderr.String(), "retrying (attempt 2/") {
-		t.Fatalf("stderr = %q, should not contain attempt 2 log", stderr.String())
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr = %q, want no retry progress", stderr.String())
 	}
 }
 

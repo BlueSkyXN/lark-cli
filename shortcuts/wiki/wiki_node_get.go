@@ -17,6 +17,8 @@ import (
 	"github.com/spf13/cobra"
 )
 
+const wikiNodeGetRateLimitHint = "Do not retry immediately. Wait retry_after_seconds, or use exponential backoff with jitter. Stop after 3 total attempts (1 initial + 2 retries)."
+
 // wikiNodeGetURLObjTypes maps a Lark URL path prefix (slash-bounded) to the
 // obj_type the wiki get_node API expects when the token is an obj_token.
 // /wiki/ is handled separately because node_tokens take no obj_type.
@@ -96,8 +98,6 @@ var WikiNodeGet = common.Shortcut{
 			return err
 		}
 
-		fmt.Fprintf(runtime.IO().ErrOut, "Fetching wiki node %s...\n", common.MaskToken(spec.Token))
-
 		data, err := runtime.CallAPITyped("GET", "/open-apis/wiki/v2/spaces/get_node", spec.RequestParams(), nil)
 		if err != nil {
 			return wikiNodeGetProblem(err)
@@ -132,10 +132,9 @@ var WikiNodeGet = common.Shortcut{
 }
 
 // wikiNodeGetProblem adds command-specific classification and recovery for
-// get_node business errors that are intentionally not registered in the
-// process-wide code metadata table. These failures are terminal for the same
-// input: callers must change the resource token or operation instead of
-// retrying the request or switching identities.
+// get_node errors that need command-specific recovery. Terminal business
+// errors require a changed token, operation, or permission; rate limiting
+// remains retryable only within the bounded backoff guidance below.
 func wikiNodeGetProblem(err error) error {
 	p, ok := errs.ProblemOf(err)
 	if !ok {
@@ -143,6 +142,8 @@ func wikiNodeGetProblem(err error) error {
 	}
 
 	switch p.Code {
+	case 99991400:
+		appendWikiProblemHint(err, wikiNodeGetRateLimitHint)
 	case 131006:
 		p.Retryable = false
 		appendWikiProblemHint(err, wikiPermissionDeniedHint())

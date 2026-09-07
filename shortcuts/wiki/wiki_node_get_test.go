@@ -404,8 +404,8 @@ func TestWikiNodeGetMountedExecuteParsesURLAndFormatsOutput(t *testing.T) {
 	if _, ok := data["url"]; ok {
 		t.Fatalf("did not expect a url field in +node-get output, got %#v", data["url"])
 	}
-	if got := stderr.String(); !strings.Contains(got, "Fetching wiki node") {
-		t.Fatalf("stderr = %q, want fetching message", got)
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr = %q, want no progress output", stderr.String())
 	}
 }
 
@@ -444,7 +444,7 @@ func TestWikiNodeGetMountedClassifiesTerminalBusinessErrors(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Setenv("LARKSUITE_CLI_CONFIG_DIR", t.TempDir())
 
-			factory, stdout, _, reg := cmdutil.TestFactory(t, wikiTestConfig())
+			factory, stdout, stderr, reg := cmdutil.TestFactory(t, wikiTestConfig())
 			reg.Register(&httpmock.Stub{
 				Method: "GET",
 				URL:    "/open-apis/wiki/v2/spaces/get_node",
@@ -482,6 +482,9 @@ func TestWikiNodeGetMountedClassifiesTerminalBusinessErrors(t *testing.T) {
 			}
 			if stdout.Len() != 0 {
 				t.Fatalf("stdout = %q, want no success envelope", stdout.String())
+			}
+			if stderr.Len() != 0 {
+				t.Fatalf("stderr = %q, want no output before the root error envelope", stderr.String())
 			}
 		})
 	}
@@ -525,6 +528,42 @@ func TestWikiNodeGetMountedExplainsResourcePermissionDenied(t *testing.T) {
 				t.Fatalf("hint = %q, want non-retryable resource-access guidance", p.Hint)
 			}
 		})
+	}
+}
+
+func TestWikiNodeGetProblemBoundsRateLimitRetries(t *testing.T) {
+	t.Parallel()
+
+	cause := errors.New("opaque upstream cause")
+	const upstreamHint = "upstream pacing hint"
+	err := errs.NewAPIError(errs.SubtypeRateLimit, "opaque upstream message").
+		WithCode(99991400).
+		WithRetryable().
+		WithRetryAfterSeconds(8).
+		WithHint(upstreamHint).
+		WithCause(cause)
+
+	got := wikiNodeGetProblem(err)
+	p, ok := errs.ProblemOf(got)
+	if !ok {
+		t.Fatalf("ProblemOf() ok=false")
+	}
+	if p.Category != errs.CategoryAPI || p.Subtype != errs.SubtypeRateLimit || p.Code != 99991400 || !p.Retryable {
+		t.Fatalf("problem = %#v, want retryable api/rate_limit/99991400", p)
+	}
+	var apiErr *errs.APIError
+	if !errors.As(got, &apiErr) {
+		t.Fatalf("error = %T, want *errs.APIError", got)
+	}
+	if apiErr.RetryAfterSeconds != 8 {
+		t.Fatalf("retry_after_seconds = %d, want 8", apiErr.RetryAfterSeconds)
+	}
+	wantHint := upstreamHint + "\n" + wikiNodeGetRateLimitHint
+	if p.Hint != wantHint {
+		t.Fatalf("hint = %q, want %q", p.Hint, wantHint)
+	}
+	if !errors.Is(got, cause) {
+		t.Fatalf("error does not preserve cause %v: %v", cause, got)
 	}
 }
 
