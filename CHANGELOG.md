@@ -2,6 +2,67 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v1.0.96] - 2026-09-16
+
+### Features
+
+- **base**: support dashboard NPS config (#2562)
+- **apps**: add +export to download an app's source code as a zip (#2594)
+- **sheets**: accept the parameter spellings two reflow windows say callers write (#2710)
+- **slides**: consolidate xml-get skill docs (#2662)
+
+### Bug Fixes
+
+- 优化工作流记录相关触发器的 Skill，消除歧义和语义错误 (#2670)
+- **minutes**: enforce deterministic search ordering (#2714)
+- **base**: repair skill references and clarify view creation (#2725)
+- restrict chat creation to tenant token (#2728)
+- **skills**: use GUIDE.md for nested suite guides (#2634)
+- **vc**: restrict meeting join and leave to bot (#2570)
+- **apps**: only treat a JSON body as export's error envelope, stream any other type (#2731)
+
+### Documentation
+
+- **base**: add view selection and lifecycle reference (#2729)
+
+### Tests
+
+- **base**: fix NPS workflow rating fixture (#2730)
+
+## [v1.0.95] - 2026-09-10
+
+### Features
+
+- **sheets**: accept the payload spellings the 08-29..31 reflow rejected (#2611)
+- **sheets**: add chart sizing and quality checks (#2504)
+- **docs**: await asynchronous document creation (#2641)
+- **im**: add concise message output (#2567)
+- Supports sorting of questions in the Base form (#2598)
+- add lazy API catalog routing (#2232)
+
+### Bug Fixes
+
+- list workspace entity 上限调整为 30 (#2646)
+- **apps**: classify db failures by their k_dl subcode (#2650)
+- handle credential and config read failures (#2583)
+- **wiki**: resolve node-get through node_by_token (#2665)
+- **docs**: resolve draft resources and validate explicit constraints (#2675)
+- **wiki**: migrate mutation lookups to node_by_token (#2676)
+- **base**: validate dashboard update filters (#2631)
+- **base**: make table and field lists fetch all items (#2674)
+- **drive**: migrate wiki lookups to node_by_token (#2682)
+- **drive**: improve token recognition for download and preview (#2680)
+- **sheets,slides**: migrate wiki lookups to node_by_token (#2696)
+- **base**: migrate wiki lookup to node_by_token (#2699)
+- **docs**: migrate wiki lookups to node_by_token (#2689)
+- **base**: preserve unsupported record values in NDJSON exports (#2701)
+- reduce vulnerable dependencies while retaining Go 1.23 (#2659)
+
+### Documentation
+
+- **im**: document folder expansion and download guidance (#2633)
+- **skills**: use wiki node shortcut in guidance (#2702)
+
 ## [v1.0.94] - 2026-09-07
 
 ### Features
@@ -2116,6 +2177,8 @@ Bundled AI agent skills for intelligent assistance:
 - Bilingual documentation (English & Chinese).
 - CI/CD pipelines: linting, testing, coverage reporting, and automated releases.
 
+[v1.0.96]: https://github.com/larksuite/cli/releases/tag/v1.0.96
+[v1.0.95]: https://github.com/larksuite/cli/releases/tag/v1.0.95
 [v1.0.94]: https://github.com/larksuite/cli/releases/tag/v1.0.94
 [v1.0.93]: https://github.com/larksuite/cli/releases/tag/v1.0.93
 [v1.0.92]: https://github.com/larksuite/cli/releases/tag/v1.0.92
